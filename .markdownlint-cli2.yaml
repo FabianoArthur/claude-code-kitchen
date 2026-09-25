@@ -1,0 +1,17 @@
+# Markdown lint config. Line length is not enforced: prose is wrapped by hand, and skill
+# files contain long tables and commands.
+config:
+  default: true
+  MD013: false          # line length
+  MD024:
+    siblings_only: true # repeated headings are fine in different sections
+  MD025:
+    front_matter_title: ""  # task docs carry a `title:` field and an H1
+  MD033: false          # inline HTML (<br/> in tables, comments in templates)
+  MD040: false          # fenced code without a language (command synopses)
+  MD060: false          # table column style
+  MD010: false          # hard tabs: TSV examples are tab-separated on purpose
+ignores:
+  - ".worktrees/**"
+  - ".kitchen/**"
+  - "node_modules/**"

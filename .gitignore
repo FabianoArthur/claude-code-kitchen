@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Kitchen runtime artifacts (never commit)
+.kitchen/
+.qa/
+.worktrees/
+
+# Local-only denylist for the private-data test (see CONTRIBUTING.md)
+.private-denylist

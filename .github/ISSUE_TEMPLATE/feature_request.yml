@@ -1,0 +1,22 @@
+name: Feature request
+description: Propose a change to the kitchen's flow, a skill, or a script.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does it solve?
+      description: The failure or friction you hit, ideally something you observed.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: If it needs a project-specific value, say which adapter field would hold it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

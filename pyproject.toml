@@ -1,0 +1,11 @@
+# Tooling config only — the skills' scripts are standalone, stdlib-only files.
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
