@@ -71,7 +71,8 @@ Requirements: [Claude Code](https://docs.claude.com/en/docs/claude-code), `git`,
 
 1. Clone: `git clone https://github.com/Fabiano-Arthur/claude-code-kitchen.git`
 2. Preview the install: `./claude-code-kitchen/install.sh --dry-run`
-3. Install (symlinks into `~/.claude/skills`, backing up anything in the way):
+3. Install (symlinks into `~/.claude/skills`). If you already have a skill with the same
+   name (`plan`, `qa`…), it asks before moving yours to `<name>.bak-<timestamp>`:
    `./claude-code-kitchen/install.sh`
 4. In your project, copy the adapter: `mkdir -p .claude && cp <kitchen>/examples/adapter.md .claude/orchestrator.md`, then edit it.
 5. Keep kitchen files out of your diffs: `printf '.kitchen/\n.worktrees/\n' >> .git/info/exclude`
@@ -121,6 +122,12 @@ What that implies:
 - The agent reads task docs, code, command output and web pages. **Any of that can contain
   instructions** (prompt injection). A task doc copied from an untrusted issue is an attack
   surface.
+- The adapter's command fields (`prepare_worktree`, `post_commit`, `status_push`, `gh`,
+  `tests.allowed`) are run by the agent. Review changes to `.claude/orchestrator.md` like
+  code — a PR that edits it edits what your kitchens execute.
+- The skills are symlinks into your clone of this repo, so `git pull` changes the
+  instructions an unattended agent follows. Update deliberately: check out a release tag
+  and read the diff first.
 
 Mitigations, strongest first:
 
@@ -135,7 +142,9 @@ Mitigations, strongest first:
 4. **No MCP servers by default** — kitchens start with `--strict-mcp-config`, so a
    third-party MCP server cannot reach them unless you declare it for that unit.
 5. **Trusted input only.** Write task docs yourself (or with `/plan`); do not paste
-   unreviewed issue text into them.
+   unreviewed issue text into them. With the `github-issues` backlog on a public repo,
+   dispatch only issues opened by collaborators you trust — see
+   [integrations.md](docs/integrations.md#github-issues).
 6. **Review every PR.** The kitchen opens PRs; merging is always yours.
 
 If none of that fits your environment, run `/execute --inline` instead: same flow, in your

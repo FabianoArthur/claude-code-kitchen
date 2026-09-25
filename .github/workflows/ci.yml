@@ -53,6 +53,8 @@ jobs:
       - name: zsh -n
         run: zsh -n shell/zshrc-guard.zsh
 
+  # Dependabot bumps the Actions and requirements-dev.txt. The versions pinned in this file
+  # (markdownlint-cli2 via npx, lychee and gitleaks with their sha256) are bumped by hand.
   docs:
     name: Docs — markdownlint, relative links
     runs-on: ubuntu-24.04
