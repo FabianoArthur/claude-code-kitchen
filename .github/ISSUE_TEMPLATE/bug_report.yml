@@ -1,0 +1,37 @@
+name: Bug report
+description: Something in a skill, script or the installer does not behave as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problem? Please use **Security → Report a vulnerability** instead of an issue.
+        Before posting logs, remove paths, tokens and anything private.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [orchestrate / CORE, execute, dotask, harvest, plan, qa, install.sh, shell guard, docs]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. adapter fields involved (redacted)
+        2. command run
+        3. output
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: "commit abc1234 · claude 2.x · tmux 3.x · python 3.12 · macOS 15 / Ubuntu 24.04"

@@ -1,0 +1,4 @@
+.worktrees/
+.kitchen/
+.qa/
+__pycache__/

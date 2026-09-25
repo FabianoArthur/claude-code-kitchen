@@ -1,0 +1,4 @@
+# Link check config. CI runs lychee --offline: only relative links and anchors are checked,
+# so the build never flakes on a third-party site.
+exclude_path = ["(^|/)\\.worktrees/", "(^|/)\\.kitchen/", "(^|/)node_modules/"]
+include_fragments = "full"
