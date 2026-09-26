@@ -145,9 +145,9 @@ def test_backup_never_lands_inside_an_older_backup(target, tmp_path):
     # the skill inside it instead of next to it.
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    (fake_bin / "date").write_text("#!/bin/sh\necho 20260101000000\n")
+    (fake_bin / "date").write_text("#!/bin/sh\necho fixedstamp\n")
     (fake_bin / "date").chmod(0o755)
-    (target / "plan.bak-20260101000000").mkdir(parents=True)
+    (target / "plan.bak-fixedstamp").mkdir(parents=True)
     (target / "plan").mkdir()
     (target / "plan" / "SKILL.md").write_text("mine\n")
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_SKILLS_DIR"}
@@ -155,6 +155,6 @@ def test_backup_never_lands_inside_an_older_backup(target, tmp_path):
     r = subprocess.run(["bash", str(ROOT / "install.sh"), "--target", str(target), "--yes"],
                        capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stderr
-    assert not (target / "plan.bak-20260101000000" / "plan").exists()
+    assert not (target / "plan.bak-fixedstamp" / "plan").exists()
     moved = [p for p in target.glob("plan.bak-*") if (p / "SKILL.md").is_file()]
     assert len(moved) == 1 and (moved[0] / "SKILL.md").read_text() == "mine\n"
