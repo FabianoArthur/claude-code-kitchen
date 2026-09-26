@@ -30,8 +30,15 @@ forbidden_in_diff:
 - drops the `+++` header, removed lines and context lines;
 - **ignores comment lines**, judged by file extension (`--` is a comment in SQL, a decrement in
   JS), so the comment that documents a rule never trips it;
+- pins the diff format (`--no-color --no-ext-diff --no-textconv --text`, fixed `a/`/`b/`
+  prefixes), so your git config (`color.ui=always`, `diff.external`) or a committed
+  `.gitattributes` (`*.js -diff`) cannot hide the added lines from it;
 - exits `0` clean · `1` hit · `2` git failed or the adapter's block is malformed (never
   "clean" on an error).
+
+It is a **quality** gate, not a security boundary: comment detection is by line prefix, so
+`/**/ console.log(x)` reads as a comment. It keeps honest mistakes out of the diff; the
+review of the PR is what stops a determined author.
 
 Point it at the worktree, not the repo root: the root's index is not where the unit's diff
 is. A hit is fixed by the agent and the gate is rerun — no human question.

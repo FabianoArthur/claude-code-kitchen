@@ -122,3 +122,81 @@ def test_gate_pattern_flag_without_value_is_usage_error(tmp_path):
     r = subprocess.run([sys.executable, str(ORCH / "gate_diff.py"), str(tmp_path), "--pattern"],
                        capture_output=True, text=True)
     assert r.returncode == 2 and "Traceback" not in r.stderr
+
+
+# Security audit: the user's own git config must not make the gate read "clean".
+@pytest.mark.parametrize("config", [
+    ["color.ui", "always"],
+    ["color.diff", "always"],
+    ["diff.noprefix", "true"],
+    ["diff.external", "true"],   # `true` prints nothing: an external diff hides every line
+    ["diff.relative", "true"],   # with the gate pointed at a subdirectory, hides the rest
+])
+def test_gate_ignores_user_diff_config(repo_with_worktree, config):
+    repo, wt = repo_with_worktree
+    sh("git", "-C", str(repo), "config", *config)
+    (wt / "a.js").write_text("export const a = 1;\nconsole.log(a);\n")
+    (wt / "sub").mkdir()
+    sh("git", "-C", str(wt), "add", "a.js")
+    r = subprocess.run([sys.executable, str(ORCH / "gate_diff.py"), str(wt / "sub")],
+                       capture_output=True, text=True)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "a.js" in r.stdout
+
+
+def test_gate_ignores_textconv_driver(repo_with_worktree):
+    repo, wt = repo_with_worktree
+    sh("git", "-C", str(repo), "config", "diff.hide.textconv", "sh -c 'true'")
+    (wt / ".gitattributes").write_text("*.js diff=hide\n")
+    (wt / "a.js").write_text("export const a = 1;\nconsole.log(a);\n")
+    sh("git", "-C", str(wt), "add", "a.js", ".gitattributes")
+    r = subprocess.run([sys.executable, str(ORCH / "gate_diff.py"), str(wt)],
+                       capture_output=True, text=True)
+    assert r.returncode == 1, r.stdout + r.stderr
+
+
+def test_gate_sees_through_binary_attribute(repo_with_worktree):
+    # A committed `.gitattributes` (`*.js -diff`) turns the diff into "Binary files differ".
+    _, wt = repo_with_worktree
+    (wt / ".gitattributes").write_text("*.js -diff\n")
+    (wt / "a.js").write_text("export const a = 1;\nconsole.log(a);\n")
+    sh("git", "-C", str(wt), "add", "a.js", ".gitattributes")
+    r = subprocess.run([sys.executable, str(ORCH / "gate_diff.py"), str(wt)],
+                       capture_output=True, text=True)
+    assert r.returncode == 1, r.stdout + r.stderr
+
+
+def test_gate_survives_staged_binary_and_non_utf8(repo_with_worktree):
+    # `--text` puts binary bytes in the diff: the gate must still answer, not crash with a
+    # traceback whose exit code 1 would read as "hit".
+    _, wt = repo_with_worktree
+    (wt / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe\x00\x01")
+    (wt / "latin.js").write_bytes("const s = 'ol\xe1';\n".encode("latin-1"))
+    sh("git", "-C", str(wt), "add", "logo.png", "latin.js")
+    r = subprocess.run([sys.executable, str(ORCH / "gate_diff.py"), str(wt)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    (wt / "b.js").write_text("console.log(1);\n")
+    sh("git", "-C", str(wt), "add", "b.js")
+    r = subprocess.run([sys.executable, str(ORCH / "gate_diff.py"), str(wt)],
+                       capture_output=True, text=True)
+    assert r.returncode == 1 and "b.js" in r.stdout, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("bad_id", ["../x", "a b", "a:b", "-t", "..", "a/b", "x;rm"])
+def test_dispatcher_rejects_unsafe_unit_ids(tmp_path, bad_id):
+    # The id becomes a tmux session name and part of a worktree path: only [A-Za-z0-9._-],
+    # never `..`, never a leading `-`.
+    dispatcher = load(ORCH / "dispatcher.py")
+    queue = tmp_path / "q.tsv"
+    queue.write_text(f"{bad_id}\t{tmp_path}\n")
+    with pytest.raises(SystemExit) as exc:
+        dispatcher.read_queue(queue)
+    assert "unit id" in str(exc.value)
+
+
+def test_dispatcher_accepts_normal_ids(tmp_path):
+    dispatcher = load(ORCH / "dispatcher.py")
+    queue = tmp_path / "q.tsv"
+    queue.write_text(f"kelvin-support\t{tmp_path}\nFE_2.1\t{tmp_path}\n")
+    assert [u for u, _ in dispatcher.read_queue(queue)] == ["kelvin-support", "FE_2.1"]

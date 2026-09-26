@@ -23,7 +23,7 @@ python3 -m pytest                      # includes every script's --selftest
 ruff check .
 shellcheck install.sh
 zsh -n shell/zshrc-guard.zsh
-npx --yes markdownlint-cli2@0.18.1 "**/*.md"
+npx --yes markdownlint-cli2@0.23.3 "**/*.md"
 lychee --offline --no-progress --include-fragments '**/*.md'
 gitleaks dir . --redact
 ```

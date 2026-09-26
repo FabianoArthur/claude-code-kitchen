@@ -1,0 +1,21 @@
+# Keeps the pinned dev tools (requirements-dev.txt) and the SHA-pinned Actions current.
+# The skills' scripts are stdlib-only: there is no runtime dependency to update.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-tools:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
