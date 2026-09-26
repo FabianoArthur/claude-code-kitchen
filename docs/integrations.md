@@ -19,9 +19,9 @@ Nothing else is needed.
 backlog:
   type: github-issues
   # `gh api` rather than `gh issue view`: only the REST API returns author_association.
-  reader: "gh api repos/{owner}/{repo}/issues/{id} --jq '{number, title, body, state, labels: [.labels[].name], author: .user.login, authorAssociation: .author_association}'"
+  reader: "gh api repos/{owner}/{repo}/issues/{id} --jq '{number, title, body, state, labels: [.labels[].name], author: .user.login, authorAssociation: .author_association, isPR: (.pull_request != null)}'"
   size_field: "label:size/*"     # e.g. labels size/S, size/M
-  open_statuses: [OPEN]
+  open_statuses: [open]      # the REST API returns lowercase; skip items with isPR: true
 ```
 
 `/dotask 123` reads the issue, writes a local task doc in the `/plan` format (so acceptance
