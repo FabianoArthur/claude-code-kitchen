@@ -191,7 +191,7 @@ shell/             opt-in zsh guard for non-human shells
 examples/          adapter, QA adapter, task doc, demo project
 docs/              architecture, adapter, manifest, gates, QA, integrations, troubleshooting
 tests/             pytest suite (runs every script's --selftest too)
-install.sh         symlink installer (--dry-run, --uninstall)
+install.sh         symlink installer (--dry-run, --uninstall, --yes)
 ```
 
 ## Contributing

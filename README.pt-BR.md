@@ -103,7 +103,8 @@ Você vai precisar de: [Claude Code](https://docs.claude.com/en/docs/claude-code
 
 1. Clone: `git clone https://github.com/Fabiano-Arthur/claude-code-kitchen.git`
 2. Veja o que a instalação faria: `./claude-code-kitchen/install.sh --dry-run`
-3. Instale (symlinks em `~/.claude/skills`, com backup do que estiver no caminho):
+3. Instale (symlinks em `~/.claude/skills`). Se você já tem uma skill com o mesmo nome
+   (`plan`, `qa`…), o instalador pergunta antes de mover a sua para `<nome>.bak-<data>`:
    `./claude-code-kitchen/install.sh`
 4. No seu projeto, copie o adapter: `mkdir -p .claude && cp <kitchen>/examples/adapter.md .claude/orchestrator.md` e depois edite o arquivo.
 5. Tire os arquivos da cozinha dos seus diffs: `printf '.kitchen/\n.worktrees/\n' >> .git/info/exclude`
@@ -154,6 +155,12 @@ O que isso significa:
 - O agente lê docs de tarefa, código, saída de comando e páginas web. **Qualquer uma dessas
   coisas pode trazer instruções** (prompt injection). Um doc de tarefa copiado de uma issue
   em que você não confia é superfície de ataque.
+- Os campos de comando do adapter (`prepare_worktree`, `post_commit`, `status_push`, `gh`,
+  `tests.allowed`) são executados pelo agente. Revise mudanças no `.claude/orchestrator.md`
+  como código: um PR que mexe nele mexe no que as suas cozinhas executam.
+- As skills são symlinks para o seu clone deste repositório, então um `git pull` muda as
+  instruções que um agente sem supervisão segue. Atualize com calma: faça checkout de uma
+  tag de release e leia o diff antes.
 
 Mitigações, da mais forte para a mais fraca:
 
@@ -169,7 +176,9 @@ Mitigações, da mais forte para a mais fraca:
 4. **Nenhum servidor MCP por padrão** — as cozinhas sobem com `--strict-mcp-config`, então um
    servidor MCP de terceiro só chega nelas se você o declarar para aquela unidade.
 5. **Só entrada confiável.** Escreva os docs de tarefa você mesmo (ou com `/plan`); não cole
-   texto de issue sem revisar.
+   texto de issue sem revisar. Com o backlog `github-issues` num repositório público, só
+   despache issues abertas por colaboradores de confiança — veja
+   [integrations.md](docs/integrations.md#github-issues).
 6. **Revise todo PR.** A cozinha abre o PR; o merge é sempre seu.
 
 Se nada disso for viável no seu ambiente, use `/execute --inline`: o mesmo fluxo, na
@@ -217,7 +226,7 @@ shell/             proteção opcional do zsh para shells que não são de human
 examples/          adapter, adapter de QA, doc de tarefa, projeto de demonstração
 docs/              arquitetura, adapter, manifesto, gates, QA, integrações, solução de problemas
 tests/             testes com pytest (rodam também o --selftest de cada script)
-install.sh         instalador por symlink (--dry-run, --uninstall)
+install.sh         instalador por symlink (--dry-run, --uninstall, --yes)
 ```
 
 ## Contribuindo
