@@ -69,7 +69,7 @@ gates → commit → PR with an honest gate report and a mandatory `## Not verif
 Requirements: [Claude Code](https://docs.claude.com/en/docs/claude-code), `git`, `tmux`,
 `python3` (3.10+), and the [GitHub CLI](https://cli.github.com/) (`gh`) logged in.
 
-1. Clone: `git clone https://github.com/Fabiano-Arthur/claude-code-kitchen.git`
+1. Clone: `git clone https://github.com/FabianoArthur/claude-code-kitchen.git`
 2. Preview the install: `./claude-code-kitchen/install.sh --dry-run`
 3. Install (symlinks into `~/.claude/skills`). If you already have a skill with the same
    name (`plan`, `qa`…), it asks before moving yours to `<name>.bak-<timestamp>`:

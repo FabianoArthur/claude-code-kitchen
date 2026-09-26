@@ -101,7 +101,7 @@ relatório de gates honesto e uma seção `## Not verified` obrigatória.
 Você vai precisar de: [Claude Code](https://docs.claude.com/en/docs/claude-code), `git`,
 `tmux`, `python3` (3.10+) e o [GitHub CLI](https://cli.github.com/) (`gh`) com login feito.
 
-1. Clone: `git clone https://github.com/Fabiano-Arthur/claude-code-kitchen.git`
+1. Clone: `git clone https://github.com/FabianoArthur/claude-code-kitchen.git`
 2. Veja o que a instalação faria: `./claude-code-kitchen/install.sh --dry-run`
 3. Instale (symlinks em `~/.claude/skills`). Se você já tem uma skill com o mesmo nome
    (`plan`, `qa`…), o instalador pergunta antes de mover a sua para `<nome>.bak-<data>`:

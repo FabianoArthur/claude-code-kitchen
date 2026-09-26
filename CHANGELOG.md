@@ -34,5 +34,5 @@ All notable changes to this project are documented here. The format follows
 - Documentation in English with a full Portuguese (Brazil) README.
 - CI: pytest + every `--selftest`, ruff, shellcheck, markdownlint, lychee, gitleaks.
 
-[Unreleased]: https://github.com/Fabiano-Arthur/claude-code-kitchen/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Fabiano-Arthur/claude-code-kitchen/releases/tag/v0.1.0
+[Unreleased]: https://github.com/FabianoArthur/claude-code-kitchen/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/FabianoArthur/claude-code-kitchen/releases/tag/v0.1.0
