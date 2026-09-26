@@ -12,8 +12,9 @@ SKILLS = sorted(p.name for p in (ROOT / "skills").iterdir() if (p / "SKILL.md").
 def install(target, *args, home=None):
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_SKILLS_DIR"}
     env["HOME"] = str(home or target.parent / "fake-home")  # a bug can never reach the real home
+    # stdin is never a terminal here, so install.sh cannot stop to ask a question.
     return subprocess.run(["bash", str(ROOT / "install.sh"), "--target", str(target), *args],
-                          capture_output=True, text=True, env=env)
+                          capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
 
 
 @pytest.fixture
@@ -47,7 +48,7 @@ def test_idempotent(target):
 def test_existing_directory_is_backed_up_not_clobbered(target):
     (target / "plan").mkdir(parents=True)
     (target / "plan" / "SKILL.md").write_text("my own plan skill\n")
-    r = install(target)
+    r = install(target, "--yes")
     assert r.returncode == 0, r.stderr
     backups = list(target.glob("plan.bak-*"))
     assert len(backups) == 1
@@ -60,11 +61,24 @@ def test_foreign_symlink_is_backed_up(target, tmp_path):
     elsewhere.mkdir()
     target.mkdir()
     (target / "qa").symlink_to(elsewhere)
-    install(target)
+    install(target, "--yes")
     backups = list(target.glob("qa.bak-*"))
     assert len(backups) == 1 and backups[0].is_symlink()
     assert backups[0].resolve() == elsewhere.resolve()
     assert (target / "qa").resolve() == (ROOT / "skills" / "qa").resolve()
+
+
+def test_existing_skill_is_not_moved_without_consent(target):
+    # Security audit: a same-named skill of the user (`plan`, `qa`…) is theirs. Without a
+    # terminal to ask and without --yes, the installer refuses and changes NOTHING.
+    (target / "plan").mkdir(parents=True)
+    (target / "plan" / "SKILL.md").write_text("my own plan skill\n")
+    r = install(target)
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "plan" in r.stderr and "--yes" in r.stderr
+    assert sorted(p.name for p in target.iterdir()) == ["plan"]
+    assert not (target / "plan").is_symlink()
+    assert (target / "plan" / "SKILL.md").read_text() == "my own plan skill\n"
 
 
 def test_dry_run_changes_nothing(target):
@@ -79,7 +93,7 @@ def test_dry_run_changes_nothing(target):
 def test_uninstall_removes_only_our_links(target):
     (target / "plan").mkdir(parents=True)
     (target / "unrelated").mkdir()
-    install(target)
+    install(target, "--yes")
     r = install(target, "--uninstall")
     assert r.returncode == 0, r.stderr
     left = sorted(p.name for p in target.iterdir())
@@ -124,3 +138,23 @@ def test_shell_guard_only_acts_for_non_human_shells():
     assert human.stdout.strip() == "SomeTerm /x"
     assert agent.stdout.strip() == "unset unset"
     assert claude.stdout.strip() == "unset unset"
+
+
+def test_backup_never_lands_inside_an_older_backup(target, tmp_path):
+    # Same-second rerun: `mv plan plan.bak-<stamp>` into an EXISTING directory would move
+    # the skill inside it instead of next to it.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "date").write_text("#!/bin/sh\necho fixedstamp\n")
+    (fake_bin / "date").chmod(0o755)
+    (target / "plan.bak-fixedstamp").mkdir(parents=True)
+    (target / "plan").mkdir()
+    (target / "plan" / "SKILL.md").write_text("mine\n")
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_SKILLS_DIR"}
+    env.update(HOME=str(tmp_path / "h"), PATH=f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    r = subprocess.run(["bash", str(ROOT / "install.sh"), "--target", str(target), "--yes"],
+                       capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+    assert r.returncode == 0, r.stderr
+    assert not (target / "plan.bak-fixedstamp" / "plan").exists()
+    moved = [p for p in target.glob("plan.bak-*") if (p / "SKILL.md").is_file()]
+    assert len(moved) == 1 and (moved[0] / "SKILL.md").read_text() == "mine\n"

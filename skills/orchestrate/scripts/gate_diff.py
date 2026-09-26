@@ -93,14 +93,23 @@ def staged_added_lines(repo):
     # Order matters: `--cached` is an option of `diff`, not of `git`.
     # `git -C <dir> --cached diff` is invalid, exits non-zero with empty stdout — and a
     # gate that reads that as "no lines" says "clean" FOREVER.
-    cmd = ["git", "-C", str(repo), "diff", "--cached", "-U0"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # The flags pin the output format against config and attributes the gate does not own:
+    # `color.ui=always`, `diff.external`, a textconv driver or a committed `*.x -diff` in
+    # `.gitattributes` would each turn the added lines into something this parser does not
+    # read — and "no lines" means "clean".
+    # `diff.relative=true` would hide everything outside <dir> when <dir> is a subdirectory.
+    cmd = ["git", "-C", str(repo), "-c", "core.quotePath=false", "diff", "--cached", "-U0",
+           "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "--text",
+           "--src-prefix=a/", "--dst-prefix=b/"]
+    # Bytes, decoded leniently: `--text` puts binaries (and any non-UTF-8 file) in the diff,
+    # and a strict decode would crash with exit 1 — which reads as "hit", not "error".
+    result = subprocess.run(cmd, capture_output=True)
     if result.returncode != 0:
         # Never degrade to "clean" silently: a git failure is a gate failure.
-        print(f"ERROR: {' '.join(cmd)} exited {result.returncode}\n"
-              f"{result.stderr.strip()[:300]}", file=sys.stderr)
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()[:300]
+        print(f"ERROR: {' '.join(cmd)} exited {result.returncode}\n{stderr}", file=sys.stderr)
         sys.exit(2)
-    return parse_added_lines(result.stdout)
+    return parse_added_lines(result.stdout.decode("utf-8", errors="replace"))
 
 
 def check(lines, patterns):
@@ -282,4 +291,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001 — a traceback exits 1, which means "hit"
+        print(f"ERROR: gate crashed: {exc!r}", file=sys.stderr)
+        sys.exit(2)

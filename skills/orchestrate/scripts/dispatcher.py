@@ -20,6 +20,7 @@ session it launched is still alive.
 KITCHEN_TMUX_SOCKET). Tests use it so they never touch your default tmux server.
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,9 @@ import time
 
 DONE = os.path.join(".kitchen", "done")
 LAUNCH = os.path.join(".kitchen", "launch.sh")
+# The id becomes a tmux session name (`:`/`.` are target syntax there) and part of a
+# worktree path: letters, digits, `.`, `_`, `-`; no leading `-` or `.`, never `..`.
+SAFE_ID = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 
 
 class Tmux:
@@ -65,6 +69,8 @@ def read_queue(path):
             parts = line.split("\t")
             if len(parts) != 2 or not parts[0] or not parts[1]:
                 sys.exit(f"invalid queue line (expected id<TAB>worktree): {raw.rstrip()!r}")
+            if not SAFE_ID.match(parts[0]) or ".." in parts[0]:
+                sys.exit(f"invalid unit id {parts[0]!r} (allowed: letters, digits, . _ -)")
             units.append((parts[0], parts[1]))
     return units
 
