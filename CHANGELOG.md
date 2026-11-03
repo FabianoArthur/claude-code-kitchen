@@ -14,6 +14,16 @@ All notable changes to this project are documented here. The format follows
   finished session still alive). Reads English and Portuguese manifests; configured through
   `~/.config/kitchen-menubar/config.json`. See `docs/menubar.md`.
 
+### Changed
+
+- `menubar/kitchen.30s.py`: native look. The bar is a flame SF Symbol plus the running and
+  waiting counts (counts turn orange when a unit waits on you; a divergence swaps the flame for a triangle and turns them red)
+  instead of a row of emojis. The menu has coloured SF Symbol group headers (empty groups are
+  hidden), the unit name on its own line with a small gray metadata line under it, icons on
+  every action, light/dark colour pairs, and a collapsed **Earlier** submenu for units that
+  finished more than a day ago. Same information, same config; needs SwiftBar 2.0 or newer for
+  the icons (checked on 2.1.1).
+
 ### Security
 
 - `gate_diff.py` pins the diff format (`--no-color --no-ext-diff --no-textconv --text`,
