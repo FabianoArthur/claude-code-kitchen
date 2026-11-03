@@ -28,7 +28,8 @@ Requirements: **macOS 26 or newer**, Xcode 26+ (or its Command Line Tools with S
 
 ```bash
 make -C macos app        # builds macos/build/Kitchen.app (release, ad-hoc signed)
-make -C macos install    # copies it to ~/Applications and opens it
+make -C macos install    # copies it to ~/Applications
+open ~/Applications/Kitchen.app
 make -C macos test       # swift test
 ```
 
@@ -281,7 +282,8 @@ for row actions.
   with a label like *export-csv, waiting on you, demo-app, 1 hour 12 minutes, PR 43: pick the
   CSV dialect*, and its actions exposed as accessibility actions. Rings read *Week, 62 percent
   used, resets in 2 days 4 hours*. The menu-bar icon has the label *Kitchen: 2 running,
-  1 waiting on you* (or *… needs attention*).
+  1 waiting on you* (or *… needs attention*); when the weekly % is shown in the bar, the
+  label ends with *, 62% of the weekly limit used*.
 - **Text size:** only semantic text styles are used (no fixed point sizes for text), so the
   panel follows the system text size where macOS applies it; rows grow vertically, nothing is
   truncated to a fixed height except the one-line screen excerpt.
