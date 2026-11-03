@@ -434,28 +434,66 @@ def render(mod, cfg, text=EN_MANIFEST, t=None, now=NOW, **kw):
     return mod.render(model, cfg, now, script="/p/kitchen.30s.py", **kw)
 
 
-def test_title_shows_only_nonzero_states(mod, cfg):
-    first = render(mod, cfg).splitlines()[0]
-    assert first.startswith("🍳 ") and "🔄1" in first and "⏳1" in first and "✅1" in first
-    assert "⏸1" in first and "🚫" not in first
+HEX = r"#[0-9a-fA-F]{6}"
+SF_NAME = r"[a-z0-9]+(\.[a-z0-9]+)*"
 
 
-def test_empty_kitchen_title_is_just_the_pan(mod, cfg):
+def param_map(line):
+    """{'sfimage': 'flame', …} of one rendered line (values may be "quoted")."""
+    import shlex
+    _, _, rest = line.partition(" | ") if " | " in line else ("", "", line.lstrip("| "))
+    return dict(tok.split("=", 1) for tok in shlex.split(rest) if "=" in tok)
+
+
+def title_of(out):
+    return out.splitlines()[0]
+
+
+def test_title_is_symbol_plus_at_most_two_counts(mod, cfg):
+    text = "| unit | state |\n|---|---|\n| a | 🔄 running |\n| b | 🔄 running |\n| c | ✅ PR #1 |\n"
+    t = tmux_state(("kitchen-a", NOW - 60, "/w/a"), ("kitchen-b", NOW - 60, "/w/b"))
+    first = title_of(render(mod, cfg, text, t=t))
+    assert first.startswith("▸2 | ") and param_map(first)["sfimage"] == "flame.fill"
+    # normal state: no colour, so the symbol follows the menu bar (light, dark, tinted wallpaper)
+    assert "color" not in param_map(first) and "sfcolor" not in param_map(first)
+    # done/queued units never reach the bar
+    assert "✅" not in first and "⏸" not in first and "1" not in first
+
+
+def test_title_has_no_emoji_and_no_extra_text_for_waiting_or_divergence(mod, cfg):
+    first = title_of(render(mod, cfg))               # 1 running, 1 waiting, crash divergence
+    text = first.split(" | ")[0]
+    assert text == "▸1 !1"                          # two numbers, nothing about ⏳ or ⚠
+    assert not any(ord(c) > 0x2000 and c not in "▸" for c in text), text
+    for emoji in "🍳🔄⏳⏸✅⚠":
+        assert emoji not in first
+
+
+def test_empty_kitchen_title_is_just_a_discreet_symbol(mod, cfg):
     model = mod.build_model(cfg, [], tmux_state(), NOW)
     out = mod.render(model, cfg, NOW, script="/p/k.py")
-    assert out.splitlines()[0] == "🍳"
+    assert title_of(out) == "| sfimage=flame"
     assert "---" in out.splitlines()
 
 
-def test_title_flags_waiting_and_divergences(mod, cfg):
-    first = render(mod, cfg).splitlines()[0]
-    assert "color=" in first       # ⏳ present → attention
-    assert "⚠️" in first           # the crash divergence (🔄 row, no session)
+def test_waiting_turns_the_symbol_orange_and_divergence_turns_it_red(mod, cfg):
+    waiting = "| unit | state |\n|---|---|\n| a | ⏳ waiting on human: why |\n"
+    p = param_map(title_of(render(mod, cfg, waiting)))
+    assert p["sfimage"] == "flame.fill" and p["sfcolor"] == mod.TONE["waiting"]
+    diverged = param_map(title_of(render(mod, cfg)))                  # crash divergence wins
+    assert diverged["sfimage"] == "exclamationmark.triangle.fill"
+    assert diverged["sfcolor"] == mod.TONE["attention"]
+    assert mod.TONE["attention"] != mod.TONE["waiting"]
 
 
 def test_title_without_attention_has_no_color(mod, cfg):
     text = "| unit | state |\n|---|---|\n| a | ✅ PR #1 |\n"
-    assert "color=" not in render(mod, cfg, text).splitlines()[0]
+    assert "color" not in title_of(render(mod, cfg, text))
+
+
+def test_queued_only_kitchen_stays_discreet(mod, cfg):
+    text = "| unit | state |\n|---|---|\n| a | ⏸ queued |\n"
+    assert title_of(render(mod, cfg, text)) == "| sfimage=flame"
 
 
 def test_output_is_well_formed_swiftbar(mod, cfg):
@@ -468,6 +506,106 @@ def test_output_is_well_formed_swiftbar(mod, cfg):
         assert line.count(" | ") <= 1, line
         assert line == "---" or line.lstrip("-").strip(), "empty menu line"
     assert any(line.startswith("--") for line in out)          # submenu lines exist
+
+
+def test_every_menu_item_has_a_valid_sf_symbol_and_colours(mod, cfg):
+    import re
+    cfg["pr_urls"] = {"demo-app": "https://github.com/o/r/pull/{n}"}
+    t = tmux_state(("kitchen-rate-limit", NOW - 700, "/w/rl"), ("kitchen-ghost", NOW - 5, "/w/g"))
+    model = mod.build_model(cfg, rows_of(mod, EN_MANIFEST), t, NOW, done_exists=never_done)
+    out = mod.render(model, cfg, NOW, "/p/k.py", panes={"kitchen-rate-limit": "writing tests"}).splitlines()
+    pair = re.compile(rf"^{HEX}(,{HEX})?$")
+    for line in out:
+        if line == "---" or line.startswith("   "):    # `   …` = small subtitle under an item
+            continue
+        p = param_map(line)
+        assert re.fullmatch(SF_NAME, p.get("sfimage", "")), f"no SF Symbol on: {line}"
+        for key in ("color", "sfcolor"):
+            if key in p:
+                assert pair.match(p[key]), line
+                assert "," in p[key], f"{key} needs a light,dark pair: {line}"
+        if "sfsize" in p:
+            assert p["sfsize"].isdigit()
+        assert not re.search("[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]", line.split(" | ")[0]), line
+
+
+def test_colours_are_consistent_per_state(mod, cfg):
+    out = render(mod, cfg)
+    by_text = {ln.split(" | ")[0]: param_map(ln) for ln in out.splitlines() if " | " in ln}
+    assert by_text["Waiting on you (1)"]["sfcolor"] == mod.TONE["waiting"]
+    assert by_text["Running (1)"]["sfcolor"] == mod.TONE["running"]
+    assert by_text["Done (1)"]["sfcolor"] == mod.TONE["done"]
+    assert by_text["export-csv"]["sfcolor"] == mod.TONE["waiting"]       # row dot matches header
+    assert len({mod.TONE[k] for k in ("running", "waiting", "attention", "done")}) == 4
+
+
+def test_groups_are_headed_and_empty_groups_do_not_appear(mod, cfg):
+    text = "| unit | state |\n|---|---|\n| a | 🔄 running |\n"
+    out = render(mod, cfg, text, t=tmux_state(("kitchen-a", NOW - 60, "/w/a")))
+    assert "Running (1)" in out
+    for absent in ("Waiting on you", "Queued", "Done", "Aborted", "Needs attention", "Earlier"):
+        assert absent not in out
+
+
+def test_old_finished_units_fold_into_a_submenu(mod, cfg):
+    cfg["pr_urls"] = {"demo-app": "https://github.com/o/r/pull/{n}"}
+    rows = rows_of(mod, EN_MANIFEST)
+    for r in rows:
+        r["mtime"] = NOW - 3 * 86400 if r["unit"] == "login-fix" else NOW
+    out = mod.render(mod.build_model(cfg, rows, tmux_state(), NOW, done_exists=never_done),
+                     cfg, NOW, "/p/k.py").splitlines()
+    assert "Done (1)" in " ".join(out)
+    i = next(n for n, ln in enumerate(out) if ln.startswith("Earlier (1)"))
+    assert out[i + 1].startswith("--login-fix") and "href=https://github.com/o/r/pull/42" in out[i + 1]
+    assert not any(ln.startswith("login-fix") for ln in out)          # not a top-level row
+    # recent ones stay inline
+    rows[2]["mtime"] = NOW
+    inline = mod.render(mod.build_model(cfg, rows, tmux_state(), NOW, done_exists=never_done),
+                        cfg, NOW, "/p/k.py")
+    assert "Earlier" not in inline and "\nlogin-fix | " in inline
+
+
+def test_metadata_goes_on_a_second_small_gray_line(mod, cfg):
+    t = tmux_state(("kitchen-rate-limit", NOW - 700, "/w/rl"))
+    out = render(mod, cfg, t=t).splitlines()
+    i = next(n for n, ln in enumerate(out) if ln.startswith("rate-limit | "))
+    meta = next(ln for ln in out[i + 1:] if "demo-app" in ln and not ln.startswith("--"))
+    assert "demo-app · 11m" in meta
+    p = param_map(meta)
+    assert p["size"] == "11" and p["color"] == mod.MUTED
+    assert "demo-app" not in out[i]                                  # name line stays clean
+
+
+def test_submenu_actions_carry_icons(mod, cfg):
+    cfg["pr_urls"] = {"demo-app": "https://github.com/o/r/pull/{n}"}
+    t = tmux_state(("kitchen-rate-limit", NOW - 700, "/w/rl"))
+    rows = rows_of(mod, EN_MANIFEST)
+    rows[0].update(pr="9")
+    out = mod.render(mod.build_model(cfg, rows, t, NOW, done_exists=never_done), cfg, NOW, "/p/k.py")
+    icons = {ln.split(" | ")[0].lstrip("-"): param_map(ln).get("sfimage") for ln in out.splitlines()
+             if ln.startswith("--")}
+    assert icons["Attach"] == "terminal"
+    assert icons["Copy attach command"] == "doc.on.doc"
+    assert icons["Open PR #9"] == "arrow.up.right.square"
+    assert icons["branch: feat/rate-limit"] == "arrow.triangle.branch"
+
+
+def test_footer_items_have_icons(mod, cfg):
+    cfg["manifests"] = ["x"]
+    rows = rows_of(mod, EN_MANIFEST)
+    for r in rows:
+        r["manifest"] = "/m/plans/x-manifest.md"
+    out = mod.render(mod.build_model(cfg, rows, tmux_state(), NOW, done_exists=never_done), cfg, NOW, "/p/k.py")
+    tail = {ln.split(" | ")[0]: param_map(ln) for ln in out.splitlines()[-3:]}
+    assert tail["Refresh now"]["sfimage"] == "arrow.clockwise"
+    assert tail["Open manifests folder"]["sfimage"] == "folder"
+    assert tail["Open manifests folder"]["param1"] == "/m/plans"
+
+
+def test_waiting_reason_keeps_its_own_line(mod, cfg):
+    out = render(mod, cfg).splitlines()
+    line = next(ln for ln in out if "pick the CSV dialect" in ln)
+    assert param_map(line)["color"] == mod.TONE["waiting"] and not line.startswith("--")
 
 
 def test_menu_item_has_unit_project_age_and_reason(mod, cfg):
@@ -514,16 +652,16 @@ def test_divergence_section_lists_each_kind(mod, cfg):
     model = mod.build_model(cfg, rows_of(mod, EN_MANIFEST), t, NOW,
                             done_exists=lambda p: "/w/lf/" in p)
     out = mod.render(model, cfg, NOW, script="/p/k.py")
-    assert "Divergences" in out
+    assert "Needs attention (3)" in out
     assert "kitchen-ghost" in out and "login-fix" in out and "rate-limit" in out
 
 
 def test_harvested_rows_are_hidden_but_counted(mod, cfg):
     text = "| unidade | estado |\n|---|---|\n| a | 🧹 colhido |\n| b | 🧹 colhido |\n| c | 🔄 rodando |\n"
     out = render(mod, cfg, text)
-    assert "🧹 2 harvested (hidden)" in out
-    assert "🧹 a" not in out and "🧹 b" not in out
-    assert "🧹" not in out.splitlines()[0]
+    assert "2 harvested (hidden)" in out
+    assert "\na |" not in out and "\nb |" not in out and "🧹" not in out
+    assert "2" not in title_of(out)
 
 
 def test_placeholder_branch_is_not_shown(mod, cfg):
@@ -534,8 +672,7 @@ def test_placeholder_branch_is_not_shown(mod, cfg):
 def test_footer(mod, cfg):
     out = render(mod, cfg, now=time.mktime((2026, 1, 2, 9, 7, 0, 0, 0, -1)))
     assert "Updated 09:07" in out
-    assert "Refresh now | refresh=true" in out
-    assert "Open manifests folder" in out
+    assert "Refresh now | sfimage=arrow.clockwise refresh=true" in out
 
 
 def test_tmux_missing_shows_note_and_still_lists_rows(mod, cfg):
@@ -607,14 +744,16 @@ def test_main_prints_menu_and_never_raises_without_tmux(mod, monkeypatch, tmp_pa
     monkeypatch.setenv("KITCHEN_MENUBAR_CONFIG", str(cfgfile))
     assert mod.main([]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("🍳") and "tmux not found" in out
+    assert out.startswith("▸1 !1 | ") and "tmux not found" in out
 
 
 def test_main_survives_unexpected_internal_error(mod, monkeypatch, capsys):
     monkeypatch.setattr(mod, "list_sessions", lambda *a, **k: 1 / 0)
     assert mod.main([]) == 0
     out = capsys.readouterr().out
-    assert out.splitlines()[0].startswith("🍳") and "Traceback" not in out
+    lines = out.splitlines()
+    assert lines[0].startswith("| sfimage=exclamationmark.triangle.fill") and lines[1] == "---"
+    assert "kitchen plugin error: ZeroDivisionError" in out and "Traceback" not in out
 
 
 def test_main_dispatches_actions(mod, monkeypatch):

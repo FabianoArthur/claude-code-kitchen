@@ -187,7 +187,7 @@ sessão principal, com os prompts de permissão de sempre.
 ## Widget na barra de menu (macOS)
 
 O `menubar/kitchen.30s.py` é um plugin do [SwiftBar](https://github.com/swiftbar/SwiftBar)
-que deixa `🍳 🔄2 ⏳1 ✅3` na sua barra de menu: unidades por estado, um menu com o que cada
+que deixa uma chama e `▸2 !1` (rodando, aguardando você) na sua barra de menu: unidades por estado, um menu com o que cada
 agente está fazendo agora (Abrir PR · Anexar · Copiar o comando de attach) e as
 **divergências** — sessão viva sem linha no manifesto, linha `🔄` cuja sessão morreu sem
 marcador `done` (um crash), sessão já encerrada que ainda segura RAM. Não gasta token: só lê
