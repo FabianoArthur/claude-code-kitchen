@@ -21,11 +21,20 @@ Thanks for helping! Bug reports, docs fixes and focused PRs are all welcome.
 python3 -m pip install -r requirements-dev.txt
 python3 -m pytest                      # includes every script's --selftest
 ruff check .
-shellcheck install.sh
+shellcheck install.sh macos/scripts/*.sh
 zsh -n shell/zshrc-guard.zsh
 npx --yes markdownlint-cli2@0.23.3 "**/*.md"
 lychee --offline --no-progress --include-fragments '**/*.md'
 gitleaks dir . --redact
+```
+
+The macOS app (needs macOS 26 and Xcode 26 or its Command Line Tools; CI runs it on
+`macos-26`):
+
+```bash
+(cd macos && swift build && swift test)   # the tests never touch the keychain or the network
+make -C macos app                         # macos/build/Kitchen.app, ad-hoc signed
+make -C macos screenshots                 # docs/images/macos-app-*.png from made-up data
 ```
 
 ## Keeping private data out

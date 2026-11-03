@@ -13,6 +13,14 @@ All notable changes to this project are documented here. The format follows
   divergences between manifests and tmux sessions (orphan session, crashed `🔄` row,
   finished session still alive). Reads English and Portuguese manifests; configured through
   `~/.config/kitchen-menubar/config.json`. See `docs/menubar.md`.
+- `menubar/kitchen.30s.py --json`: the same model as one JSON object (schema 1), with no
+  SwiftBar markup, for the macOS app and your own scripts.
+- `macos/`: **Kitchen.app**, a native SwiftUI menu-bar app for macOS 26+ with a Liquid Glass
+  panel. Shows the kitchen from `--json` (units by state, what each agent is doing, PR,
+  attach, divergences) plus Claude plan usage — weekly, five-hour window and per model — read
+  from Claude Code's own usage endpoint with the OAuth token in the login keychain (read-only,
+  never refreshed or stored, at most one request per 5 minutes, can be turned off). Built with
+  SwiftPM and `make -C macos app`, no Xcode GUI; ad-hoc signed. See `docs/macos-app.md`.
 
 ### Changed
 

@@ -170,3 +170,29 @@ manifests after the merge) are counted but hidden from the menu.
 - It is a single stdlib-only file (Python 3.9+) because SwiftBar runs a copy of it from its
   own folder. The manifest-row parsing is therefore a small duplicate of the logic in
   `skills/orchestrate/scripts/watch.py`.
+
+## JSON output (`--json`)
+
+`kitchen.30s.py --json` prints the same model the menu is drawn from as one JSON object, with
+no SwiftBar markup. The [native macOS app](macos-app.md) is its consumer; it is also handy for
+your own scripts.
+
+```bash
+python3 menubar/kitchen.30s.py --json | python3 -m json.tool
+```
+
+| key | meaning |
+|---|---|
+| `schema` | `1`. A consumer should refuse a schema it does not know |
+| `generated_at` | Unix time of the snapshot |
+| `warning` | config problem worth showing, or `null` |
+| `error` | set (and everything else empty) when the script failed; it still exits 0 |
+| `tmux_reason` | why `tmux` could not be asked (empty when it answered) |
+| `globs`, `manifest_dir` | how many manifest globs are configured, and the folder of the first one |
+| `counts` | units per state (`waiting`, `running`, `queued`, `done`, …) |
+| `units[]` | one object per manifest row: `unit`, `project`, `status`, `reason`, `size`, `route`, `branch`, `pr`, `pr_link`, `session`, `alive`, `done`, `age_seconds`, `age_text`, `recent`, `pane` (last screen line), `attach_command` |
+| `divergences[]` | `kind`, `unit`, `session`, `text`, `attach_command` |
+
+It reads the same config and has the same guarantees as the menu: read-only, short `tmux`
+timeouts, sanitised names. It holds nothing about Claude credentials — the app's usage card
+gets its numbers on its own.

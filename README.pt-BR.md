@@ -194,6 +194,23 @@ marcador `done` (um crash), sessão já encerrada que ainda segura RAM. Não gas
 os manifestos e o `tmux`. Instalação e configuração: [docs/menubar.md](docs/menubar.md)
 (em inglês).
 
+### App nativo (macOS 26+)
+
+O `macos/` gera o **Kitchen.app**, um app de barra de menu em SwiftUI com painel em Liquid
+Glass: as mesmas unidades e divergências (ele roda o plugin com `--json`, então só existe um
+parser) e mais **quanto do seu plano do Claude você já usou** na semana e na janela atual de
+cinco horas. O `make -C macos install` compila sem abrir o Xcode. Detalhes, estados e
+capturas de tela: [docs/macos-app.md](docs/macos-app.md) (em inglês).
+
+**Ele lê o seu token do Claude Code.** Os números de uso vêm do mesmo endpoint que o próprio
+Claude Code usa (`GET https://api.anthropic.com/api/oauth/usage`), que exige o token OAuth que
+o Claude Code guarda no seu keychain de login. O app lê esse token pelo `/usr/bin/security`
+(o macOS pede permissão uma vez) só para enviá-lo a esse único host. Ele nunca renova o token,
+nunca o grava em lugar nenhum (disco, logs, preferências) e consulta no máximo a cada 5
+minutos. Se o token expirou, ele pede para você abrir o Claude Code. Não quer isso? Desligue
+*Show Claude usage* nas configurações do app e ele nunca toca no keychain; ou fique com o
+plugin do SwiftBar, que não lê credencial nenhuma.
+
 ## Perguntas frequentes
 
 **É um projeto oficial da Anthropic?** Não. É um template da comunidade feito em cima de
@@ -233,6 +250,7 @@ skills/            as seis skills (a orchestrate guarda o CORE.md, as regras com
   orchestrate/scripts/  dispatcher.py · doctor.py · gate_diff.py · watch.py
   qa/scripts/           qa_preflight · qa_matrix · qa_budget · qa_report · qa_filter · qa_mutation · qa_watcher
 menubar/           plugin do SwiftBar: a cozinha na barra de menu do macOS
+macos/             app nativo de barra de menu (SwiftUI, Liquid Glass) com o uso do Claude
 shell/             proteção opcional do zsh para shells que não são de humanos
 examples/          adapter, adapter de QA, doc de tarefa, projeto de demonstração
 docs/              arquitetura, adapter, manifesto, gates, QA, integrações, barra de menu, solução de problemas
