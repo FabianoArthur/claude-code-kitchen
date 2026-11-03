@@ -40,6 +40,16 @@ private var utc: Calendar {
         #expect(MenuBarLabel(model: model).text == "▸2 !1")
     }
 
+    @Test func menuBarVoiceOverLabelSaysTheWeeklyPercentWhenItIsShown() {
+        let model = DemoData.model(calendar: utc)
+        let base = MenuBarLabel(model: model).spokenLabel
+        #expect(!base.contains("62"))
+        model.showWeeklyInMenuBar = true
+        #expect(MenuBarLabel(model: model).spokenLabel == base + ", 62% of the weekly limit used")
+        model.showUsage = false
+        #expect(MenuBarLabel(model: model).spokenLabel == base)
+    }
+
     @Test(arguments: [ColorScheme.light, .dark])
     func panelRenders(scheme: ColorScheme) throws {
         let view = PanelView(model: DemoData.model(calendar: utc)).environment(\.colorScheme, scheme)

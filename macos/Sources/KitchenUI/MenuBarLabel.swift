@@ -14,14 +14,23 @@ public struct MenuBarLabel: View {
             if !text.isEmpty { Text(text).monospacedDigit() }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(summary.accessibilityLabel)
+        .accessibilityLabel(spokenLabel)
     }
 
     var text: String {
         var parts = [model.panel.menuBar.text]
-        if model.showUsage, model.showWeeklyInMenuBar, let week = model.weeklyPercent {
-            parts.append(Formatting.percent(week))
-        }
+        if let week = shownWeeklyPercent { parts.append(Formatting.percent(week)) }
         return parts.filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// What VoiceOver reads: the kitchen summary, plus the weekly usage whenever it is drawn.
+    var spokenLabel: String {
+        let base = model.panel.menuBar.accessibilityLabel
+        guard let week = shownWeeklyPercent else { return base }
+        return "\(base), \(Formatting.percent(week)) of the weekly limit used"
+    }
+
+    private var shownWeeklyPercent: Double? {
+        model.showUsage && model.showWeeklyInMenuBar ? model.weeklyPercent : nil
     }
 }
