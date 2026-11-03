@@ -83,7 +83,8 @@ Every key is optional; a bad value is ignored with a warning line at the top of 
 | `prefixes` | `["kitchen-"]` | session-name prefixes that belong to the kitchen; other sessions are ignored. A unit `x` is the session `<prefix>x` |
 | `manifests` | `[]` | globs (`~` allowed) of manifest files. The widget has no way to guess where your plans live, so this is the one key you must set |
 | `done_markers` | `[".kitchen/done"]` | marker files, relative to the session's directory (or the unit's worktree), that mean "the unit closed" |
-| `stale_days` | `3` | a manifest whose rows are all `✅`/`🚫` and which was last modified more than this many days ago is ignored |
+| `stale_days` | `3` | a manifest with no active row (`🔄`/`⏳`/`⏸`) that was last modified more than this many days ago is ignored |
+| `max_age_days` | `0` | ignore **any** manifest older than this many days, even one with an open `⏳` row; `0` = never. Useful when abandoned batches keep the title orange |
 | `worktree_roots` | `[]` | directories that a **relative** worktree path in a manifest row (`feat/x · .worktrees/x`) is resolved against. Needed only to find `done` markers of units whose session is already dead |
 | `pr_urls` / `pr_url` | none | PR link template with `{n}` for the PR number, per manifest `project` or as the default. A full URL in the manifest's PR cell is used as is; only `http(s)` links are ever produced |
 | `terminal` | `"Terminal"` | what **Attach** opens: `Terminal`, `iTerm`, or `Ghostty` (via `open -na`, best effort) |
@@ -96,7 +97,8 @@ public English manifests (`type: manifest`, `unit | size | route | state | …`,
 `⏸ queued · 🔄 running · ⏳ waiting on human · ✅ PR · 🚫 aborted`) and on Portuguese ones
 (`tipo: manifesto`, `unidade | tam | rota | estado | …`, `⏸ na fila · 🔄 rodando ·
 ⏳ aguarda humano · ✅ PR · 🚫 abortada`) alike. If the same unit id appears in several
-manifests, the row from the most recently modified file wins.
+manifests, the row from the most recently modified file wins. Rows in a `🧹` ("harvested", used by some
+manifests after the merge) are counted but hidden from the menu.
 
 ## Behaviour you can rely on
 

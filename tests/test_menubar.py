@@ -106,7 +106,7 @@ NOW = time.time()
 
 def test_classify_by_emoji_in_both_dialects(mod):
     cases = {
-        "⏸ queued": "queued", "⏸ na fila": "queued", "⏸️ queued": "queued",
+        "🧹 colhido (mergeado)": "harvested", "⏸ queued": "queued", "⏸ na fila": "queued", "⏸️ queued": "queued",
         "🔄 running": "running", "🔄 rodando": "running",
         "⏳ waiting on human: x": "waiting", "⏳ aguarda humano": "waiting",
         "✅ PR #4": "done", "🚫 aborted": "aborted", "🚫 abortada": "aborted",
@@ -214,6 +214,21 @@ def test_old_manifest_with_active_row_is_kept(mod, cfg, tmp_path):
     assert mod.load_rows(cfg, NOW) != []
 
 
+def test_stale_manifest_of_harvested_and_unknown_rows_is_ignored(mod, cfg, tmp_path):
+    text = ("| unidade | estado |\n|---|---|\n| a | 🧹 colhido (mergeado) |\n"
+            "| b | 🍳 na cozinha |\n| c | ✅ PR #1 |\n")
+    write(tmp_path / "old-manifest.md", text, age_days=10)
+    assert mod.load_rows(cfg, NOW) == []
+
+
+def test_max_age_days_drops_even_active_manifests(mod, cfg, tmp_path):
+    write(tmp_path / "old-manifest.md", EN_MANIFEST, age_days=10)
+    cfg["max_age_days"] = 5
+    assert mod.load_rows(cfg, NOW) == []
+    cfg["max_age_days"] = 30
+    assert mod.load_rows(cfg, NOW) != []
+
+
 def test_recent_all_done_manifest_is_kept(mod, cfg, tmp_path):
     write(tmp_path / "new-manifest.md", PT_MANIFEST.replace("🔄 rodando", "✅ PR #1")
           .replace("⏳ aguarda humano: decidir o formato", "✅ PR #2")
@@ -286,6 +301,12 @@ def test_pane_summary_skips_chrome_and_blank_lines(mod, cfg):
     assert mod.pane_summary(cfg, "kitchen-a", run=run) == "42 passed in 1.2s"
 
 
+def test_pane_summary_skips_the_spinner_line(mod, cfg):
+    pane = "⏺ Bash(pytest -q)\n✶ Wandering… (8m 13s · ↓ 51.4k tokens)\n"
+    assert mod.pane_summary(cfg, "kitchen-a", run=fake_run(panes={"=kitchen-a:": pane})) \
+        == "⏺ Bash(pytest -q)"
+
+
 def test_pane_summary_truncates_and_strips_swiftbar_separators(mod, cfg):
     run = fake_run(panes={"=kitchen-a:": "a | b " + "x" * 200 + "\n"})
     out = mod.pane_summary(cfg, "kitchen-a", run=run)
@@ -326,7 +347,7 @@ def never_done(_p):
 def test_counts_by_state(mod, cfg):
     model = mod.build_model(cfg, rows_of(mod, EN_MANIFEST), tmux_state(), NOW, done_exists=never_done)
     assert model["counts"] == {"queued": 1, "running": 1, "waiting": 1, "done": 1, "aborted": 1,
-                               "unknown": 0}
+                               "harvested": 0, "unknown": 0}
 
 
 def test_divergence_session_without_row(mod, cfg):
@@ -495,6 +516,19 @@ def test_divergence_section_lists_each_kind(mod, cfg):
     out = mod.render(model, cfg, NOW, script="/p/k.py")
     assert "Divergences" in out
     assert "kitchen-ghost" in out and "login-fix" in out and "rate-limit" in out
+
+
+def test_harvested_rows_are_hidden_but_counted(mod, cfg):
+    text = "| unidade | estado |\n|---|---|\n| a | 🧹 colhido |\n| b | 🧹 colhido |\n| c | 🔄 rodando |\n"
+    out = render(mod, cfg, text)
+    assert "🧹 2 harvested (hidden)" in out
+    assert "🧹 a" not in out and "🧹 b" not in out
+    assert "🧹" not in out.splitlines()[0]
+
+
+def test_placeholder_branch_is_not_shown(mod, cfg):
+    text = "| unit | state | branch/worktree |\n|---|---|---|\n| a | 🔄 running | — |\n"
+    assert "branch:" not in render(mod, cfg, text)
 
 
 def test_footer(mod, cfg):

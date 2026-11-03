@@ -56,7 +56,8 @@ DEFAULTS = {
     "prefixes": ["kitchen-"],        # session-name prefixes that belong to the kitchen
     "manifests": [],                 # globs of manifest files
     "done_markers": [".kitchen/done"],
-    "stale_days": 3,                 # ignore all-✅/🚫 manifests older than this
+    "stale_days": 3,                 # ignore manifests with no active row older than this
+    "max_age_days": 0,               # ignore ANY manifest older than this (0 = never)
     "worktree_roots": [],            # where relative worktree paths of a manifest resolve
     "pr_url": "",                    # e.g. https://github.com/OWNER/REPO/pull/{n}
     "pr_urls": {},                   # same, per manifest project name
@@ -64,19 +65,26 @@ DEFAULTS = {
     "tmux": "",                      # path to tmux; empty = look it up
 }
 
-EMOJI = {"🚫": "aborted", "✅": "done", "⏳": "waiting", "🔄": "running", "⏸": "queued"}
-STATES = ("running", "waiting", "queued", "done", "aborted", "unknown")
-ICON = {"running": "🔄", "waiting": "⏳", "queued": "⏸", "done": "✅", "aborted": "🚫", "unknown": "❔"}
+# 🧹 "harvested" is the post-merge state some manifests use once a unit is cleaned up
+EMOJI = {"🚫": "aborted", "✅": "done", "⏳": "waiting", "🔄": "running", "⏸": "queued",
+         "🧹": "harvested"}
+STATES = ("running", "waiting", "queued", "done", "aborted", "harvested", "unknown")
+ACTIVE = ("running", "waiting", "queued")
+ICON = {"running": "🔄", "waiting": "⏳", "queued": "⏸", "done": "✅", "aborted": "🚫",
+        "harvested": "🧹", "unknown": "❔"}
 TITLE_STATES = ("running", "waiting", "queued", "done")
 LABEL = {"waiting": "Waiting on human", "running": "Running", "queued": "Queued",
-         "done": "PR open / done", "aborted": "Aborted", "unknown": "Unknown state"}
+         "done": "PR open / done", "aborted": "Aborted", "harvested": "Harvested",
+         "unknown": "Unknown state"}
 ATTENTION = "#d9480f,#ff9f0a"
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 PR_URL_IN_CELL = re.compile(r"https?://[^\s)>\]|]+")
 PR_NUMBER = re.compile(r"#(\d+)")
 PR_PATH = re.compile(r"/pull/(\d+)")
-CHROME = re.compile(r"^\W*(\?\s*)?for shortcuts|^\W*⏵⏵|^\W*(accept edits|bypass permissions)", re.I)
+# Claude Code's own screen furniture: hint line, mode line, the spinner ("✶ Wandering… (8m)")
+CHROME = re.compile(r"^\W*(\?\s*)?for shortcuts|^\W*⏵⏵|^\W*(accept edits|bypass permissions)"
+                    r"|^[✶✻✽✢✳·*]\s", re.I)
 
 
 # ------------------------------------------------------------------ config
@@ -128,7 +136,7 @@ def load_config(path):
                 cfg[key] = None
             else:
                 bad.append(key)
-        elif key == "stale_days":
+        elif key in ("stale_days", "max_age_days"):
             if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
                 cfg[key] = value
             else:
@@ -274,8 +282,10 @@ def load_rows(cfg, now):
             continue
         if not parsed["rows"]:
             continue
-        all_closed = all(r["status"] in ("done", "aborted") for r in parsed["rows"])
-        if all_closed and now - mtime > cfg["stale_days"] * 86400:
+        age_days = (now - mtime) / 86400
+        no_active_row = not any(r["status"] in ACTIVE for r in parsed["rows"])
+        if (no_active_row and age_days > cfg["stale_days"]) or \
+                (cfg["max_age_days"] and age_days > cfg["max_age_days"]):
             continue
         for r in parsed["rows"]:
             if r["unit"] in seen:
@@ -492,6 +502,8 @@ def render(model, cfg, now, script, warning=None, panes=None):
         out.append(f"{LABEL[status]} ({len(group)}) | size=11 color=gray")
         for e in group:
             out.extend(_item(e, cfg, script, panes))
+    if counts["harvested"]:
+        out.append(f"🧹 {counts['harvested']} harvested (hidden) | size=11 color=gray")
     out.append("---")
     out.append(f"Updated {time.strftime('%H:%M', time.localtime(now))} | color=gray")
     out.append("Refresh now | refresh=true")
@@ -504,7 +516,7 @@ def render(model, cfg, now, script, warning=None, panes=None):
 def _item(e, cfg, script, panes):
     bits = [f"{ICON[e['status']]} {clean(e['unit'])}"]
     if e["project"]:
-        bits.append(clean(e["project"]))
+        bits.append(clean(e["project"], 40))
     if e["age"] is not None:
         bits.append(fmt_age(e["age"]))
     if e["pr"]:
@@ -519,7 +531,7 @@ def _item(e, cfg, script, panes):
     link = _pr_link(cfg, e)
     if link:
         lines.append(f"--Open PR #{e['pr']} | href={link}")
-    if e["branch"]:
+    if e["branch"] and e["branch"] not in ("—", "–", "-") and not e["branch"].startswith("("):
         lines.append(f"--branch: {clean(e['branch'], 60)} | size=11 color=gray")
     if e["alive"] and e["session"] and safe_name(e["session"]):
         lines.extend(_session_actions(script, e["session"]))
