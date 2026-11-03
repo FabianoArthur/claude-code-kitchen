@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "generated_at": 1767225600.0,
+  "warning": null,
+  "error": "ZeroDivisionError: division by zero",
+  "tmux_reason": "",
+  "globs": 0,
+  "manifest_dir": "",
+  "counts": {
+    "running": 0,
+    "waiting": 0,
+    "queued": 0,
+    "done": 0,
+    "aborted": 0,
+    "harvested": 0,
+    "unknown": 0
+  },
+  "units": [],
+  "divergences": []
+}

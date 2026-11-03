@@ -35,6 +35,9 @@ anything and never lets an error reach the menu bar as a traceback.
 Actions (called by the menu items themselves):
     kitchen.30s.py attach <session>     open a terminal attached to the session
     kitchen.30s.py copy <session>       copy the attach command to the clipboard
+
+Structured output (read by the native macOS app in macos/, see docs/macos-app.md):
+    kitchen.30s.py --json               the same model as one JSON object (schema 1)
 """
 from __future__ import annotations
 
@@ -604,6 +607,48 @@ def _item(e, cfg, script, panes):
     return lines
 
 
+# ------------------------------------------------------------------ JSON output
+
+JSON_SCHEMA = 1
+
+
+def _attach_or_none(cfg, session):
+    if not session or not safe_name(session) or (cfg.get("socket") and not safe_name(cfg["socket"])):
+        return None
+    return attach_command(cfg, session)
+
+
+def to_json(model, cfg, now, warning=None, panes=None, error=None):
+    """The model as a JSON-ready dict for the macOS app. Same data as the menu, no markup."""
+    panes = panes or {}
+    units = []
+    for e in model["entries"]:
+        link = _pr_link(cfg, e)
+        units.append({
+            "unit": e["unit"], "project": e["project"], "status": e["status"], "reason": e["reason"],
+            "size": e["size"], "route": e["route"], "branch": e["branch"], "pr": e["pr"],
+            "pr_link": link or None, "session": e["session"], "alive": e["alive"], "done": e["done"],
+            "age_seconds": e["age"], "age_text": fmt_age(e["age"]) if e["age"] is not None else None,
+            "recent": not (e["status"] == "done" and e["mtime"] is not None
+                           and now - e["mtime"] > DONE_RECENT),
+            "pane": (panes.get(e["session"]) or "") if e["session"] else "",
+            "attach_command": _attach_or_none(cfg, e["session"]) if e["alive"] else None,
+        })
+    divergences = [{"kind": d["kind"], "unit": d["unit"], "session": d["session"], "text": d["text"],
+                    "attach_command": _attach_or_none(cfg, d["session"])}
+                   for d in model["divergences"]]
+    return {"schema": JSON_SCHEMA, "generated_at": now, "warning": warning, "error": error,
+            "tmux_reason": model["tmux_reason"], "globs": model["globs"],
+            "manifest_dir": model["manifest_dir"], "counts": model["counts"],
+            "units": units, "divergences": divergences}
+
+
+def empty_json(now, warning=None, error=None):
+    return {"schema": JSON_SCHEMA, "generated_at": now, "warning": warning, "error": error,
+            "tmux_reason": "", "globs": 0, "manifest_dir": "", "counts": {k: 0 for k in STATES},
+            "units": [], "divergences": []}
+
+
 # ------------------------------------------------------------------ actions
 
 def attach_command(cfg, session):
@@ -649,25 +694,41 @@ def do_copy(cfg, session, run=subprocess.run):
 
 # ------------------------------------------------------------------ entry point
 
+def collect(cfg, now):
+    """(model, panes): the manifests, the tmux sessions, and the last screen line of live units."""
+    rows = load_rows(cfg, now)
+    tmux = list_sessions(cfg)
+    model = build_model(cfg, rows, tmux, now)
+    panes = {}
+    for e in model["entries"]:
+        if len(panes) >= MAX_PANES:
+            break
+        if e["alive"] and not e["done"] and e["status"] in ("running", "waiting"):
+            panes[e["session"]] = pane_summary(cfg, e["session"])
+    return model, panes
+
+
 def main(argv):
+    import json
+
     cfg, warning = load_config(config_path())
+    now = time.time()
+    if argv == ["--json"]:
+        try:
+            model, panes = collect(cfg, now)
+            out = to_json(model, cfg, now, warning=warning, panes=panes)
+        except Exception as e:  # the app shows the message instead of a decode failure
+            out = empty_json(now, warning=warning, error=clean(type(e).__name__ + ": " + str(e), 200))
+        print(json.dumps(out, ensure_ascii=False))
+        return 0
     if argv:
         actions = {"attach": do_attach, "copy": do_copy}
         if len(argv) != 2 or argv[0] not in actions:
             print(__doc__)
             return 1
         return 0 if actions[argv[0]](cfg, argv[1]) else 1
-    now = time.time()
     try:
-        rows = load_rows(cfg, now)
-        tmux = list_sessions(cfg)
-        model = build_model(cfg, rows, tmux, now)
-        panes = {}
-        for e in model["entries"]:
-            if len(panes) >= MAX_PANES:
-                break
-            if e["alive"] and not e["done"] and e["status"] in ("running", "waiting"):
-                panes[e["session"]] = pane_summary(cfg, e["session"])
+        model, panes = collect(cfg, now)
         print(render(model, cfg, now, os.path.abspath(__file__), warning=warning, panes=panes))
     except Exception as e:  # the menu bar must never show a traceback
         print(_line("", sfimage="exclamationmark.triangle.fill", sfcolor=TONE["attention"]))

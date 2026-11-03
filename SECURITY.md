@@ -33,7 +33,11 @@ In scope:
   clobber, a gate that reports "clean" when it should not, unsafe file handling);
 - instructions in the skills that would lead an agent to leak secrets, push to a protected
   branch, run destructive commands outside the documented flow, or follow instructions
-  found in a task doc, issue or command output.
+  found in a task doc, issue or command output;
+- the menu-bar plugin (`menubar/`) and the macOS app (`macos/`) — in particular any way the
+  app could leak the Claude Code OAuth token it reads from the keychain (to disk, logs,
+  preferences, crash reports, or any host other than `api.anthropic.com`), or refresh or
+  rewrite it.
 
 Out of scope, because they are inherent and documented: an agent started with
 `--dangerously-skip-permissions` can run any command your user can run. The threat model

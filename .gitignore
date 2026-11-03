@@ -18,3 +18,7 @@ venv/
 
 # Local-only denylist for the private-data test (see CONTRIBUTING.md)
 .private-denylist
+
+# macOS app build output
+macos/.build/
+macos/build/

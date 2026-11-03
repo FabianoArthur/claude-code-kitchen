@@ -159,6 +159,23 @@ no manifest row, a `🔄` row whose session died without a `done` marker (a cras
 session still holding RAM. Zero tokens; it only reads manifests and `tmux`. Setup and
 configuration: [docs/menubar.md](docs/menubar.md).
 
+### Native app (macOS 26+)
+
+`macos/` builds **Kitchen.app**, a SwiftUI menu-bar app with a Liquid Glass panel: the same
+units and divergences (it runs the plugin with `--json`, so there is one parser), plus **how
+much of your Claude plan you have used** this week and in the current five-hour window.
+`make -C macos install` builds it without opening Xcode. Details, states and screenshots:
+[docs/macos-app.md](docs/macos-app.md).
+
+**It reads your Claude Code token.** The usage numbers come from the endpoint Claude Code
+itself uses (`GET https://api.anthropic.com/api/oauth/usage`), which needs the OAuth token
+Claude Code keeps in your login keychain. The app reads it through `/usr/bin/security` — macOS
+asks you once — and only to send it to that one host. It never refreshes the token, never
+writes it anywhere (disk, logs, preferences), and asks at most every 5 minutes. If the token
+has expired it tells you to open Claude Code. Don't want that? Turn off *Show Claude usage* in
+its Settings and it never touches the keychain; or keep the SwiftBar plugin, which reads no
+credential at all.
+
 ## FAQ
 
 **Is this an official Anthropic project?** No. It is a community template built on public
@@ -197,6 +214,7 @@ skills/            the six skills (orchestrate holds CORE.md, the shared ruleboo
   orchestrate/scripts/  dispatcher.py · doctor.py · gate_diff.py · watch.py
   qa/scripts/           qa_preflight · qa_matrix · qa_budget · qa_report · qa_filter · qa_mutation · qa_watcher
 menubar/           SwiftBar plugin: the kitchen in your macOS menu bar
+macos/             native menu-bar app (SwiftUI, Liquid Glass) with Claude usage
 shell/             opt-in zsh guard for non-human shells
 examples/          adapter, QA adapter, task doc, demo project
 docs/              architecture, adapter, manifest, gates, QA, integrations, menubar, troubleshooting
