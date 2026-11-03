@@ -150,6 +150,15 @@ Mitigations, strongest first:
 If none of that fits your environment, run `/execute --inline` instead: same flow, in your
 main session, with normal permission prompts.
 
+## Menu-bar widget (macOS)
+
+`menubar/kitchen.30s.py` is a [SwiftBar](https://github.com/swiftbar/SwiftBar) plugin that
+keeps `🍳 🔄2 ⏳1 ✅3` in your menu bar: units by state, a menu with what each agent is doing
+right now (Open PR · Attach · Copy attach command), and **divergences** — a live session with
+no manifest row, a `🔄` row whose session died without a `done` marker (a crash), a finished
+session still holding RAM. Zero tokens; it only reads manifests and `tmux`. Setup and
+configuration: [docs/menubar.md](docs/menubar.md).
+
 ## FAQ
 
 **Is this an official Anthropic project?** No. It is a community template built on public
@@ -187,9 +196,10 @@ integration hooking the non-interactive shell.
 skills/            the six skills (orchestrate holds CORE.md, the shared rulebook)
   orchestrate/scripts/  dispatcher.py · doctor.py · gate_diff.py · watch.py
   qa/scripts/           qa_preflight · qa_matrix · qa_budget · qa_report · qa_filter · qa_mutation · qa_watcher
+menubar/           SwiftBar plugin: the kitchen in your macOS menu bar
 shell/             opt-in zsh guard for non-human shells
 examples/          adapter, QA adapter, task doc, demo project
-docs/              architecture, adapter, manifest, gates, QA, integrations, troubleshooting
+docs/              architecture, adapter, manifest, gates, QA, integrations, menubar, troubleshooting
 tests/             pytest suite (runs every script's --selftest too)
 install.sh         symlink installer (--dry-run, --uninstall, --yes)
 ```

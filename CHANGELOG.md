@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `menubar/kitchen.30s.py`: a SwiftBar plugin for the macOS menu bar. Unit counts by state,
+  one menu item per unit (last screen line, Open PR, Attach, Copy attach command), and
+  divergences between manifests and tmux sessions (orphan session, crashed `🔄` row,
+  finished session still alive). Reads English and Portuguese manifests; configured through
+  `~/.config/kitchen-menubar/config.json`. See `docs/menubar.md`.
+
 ### Security
 
 - `gate_diff.py` pins the diff format (`--no-color --no-ext-diff --no-textconv --text`,
