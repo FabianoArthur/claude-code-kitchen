@@ -5,17 +5,68 @@ opening a terminal — and, more usefully, what is **wrong** with the kitchen wi
 having to look. It spends zero tokens: it only reads the batch [manifests](manifest.md) and
 asks tmux for the session list, every 30 seconds.
 
-```
-🍳 🔄2 ⏳1 ✅3 ⚠️1
+The bar shows a flame SF Symbol and, next to it, only what asks for your attention: how many
+units are running (`▸`) and how many are waiting on you (`!`). Nothing else is added to the bar —
+the *symbol and its colour* carry the alarm:
+
+| state | bar | symbol |
+|---|---|---|
+| empty, or only queued / done units | *(symbol only)* | `flame`, system colour |
+| units running | `▸2` | `flame.fill`, system colour |
+| a unit waits on you | `▸2 !1` | `flame.fill`, **orange** |
+| a divergence (see below) | `▸2 !1` | `exclamationmark.triangle.fill`, **red** |
+
+Colours are `light,dark` pairs, so they read on both menu appearances; the calm states use the
+system colour and follow the menu bar tint.
+
+## Before and after
+
+Before (0.1.0) — every line began with an emoji and carried all of its metadata:
+
+```text
+🍳 🔄1 ⏳1 ✅1 ⏸1 ⚠️1
+─────────────────────────────────────────
+⚠️ Divergences (1)
+⚠️ kitchen-ghost: live session with no manifest row
+⏳ Waiting on human (1)
+⏳ export-csv · demo-app · PR #42 — pick the CSV dialect
+🔄 Running (1)
+🔄 rate-limit · demo-app · 11m
 ```
 
-The title counts units by state (only the non-zero ones; a bare `🍳` means an empty
-kitchen). It turns orange when a unit is waiting on a human or there is a divergence.
+After — SF Symbols coloured by state, the name on its own line, a small gray line under it:
+
+```text
+▸1 !1                                       ← flame (red triangle while there is a divergence)
+─────────────────────────────────────────
+⚠ Needs attention (1)                       red
+● kitchen-ghost: live session with no manifest row
+    ⌄ Attach · Copy attach command
+✋ Waiting on you (1)                       orange
+● export-csv
+    demo-app                                small, gray
+    pick the CSV dialect                    orange: why it is waiting
+▶ Running (1)                               blue
+● rate-limit                                ⌄ screen line · branch · Open PR · Attach · Copy
+    demo-app · 11m                          small, gray
+⌛ Queued (1)                               gray
+✓ Done (1)                                  green
+  ⏱ Earlier (3)                             ⌄ finished more than a day ago, with PR links
+─────────────────────────────────────────
+⏲ Updated 09:07                             small, gray
+↻ Refresh now
+📁 Open manifests folder
+```
+
+(The text preview approximates the symbols with ordinary glyphs; the real menu draws SF
+Symbols.) Empty groups do not appear. Units that finished more than a day ago (by the age of
+their manifest file) fold into an **Earlier** submenu.
 
 ## What the menu shows
 
-- **One item per unit**, grouped by state (waiting on human first): unit id, project, time
-  since the session was created (or since dispatch), the `⏳` reason, the PR number.
+- **One item per unit**, grouped by state (waiting on you first): the unit id on its own
+  line, then a small gray line with the project, the time since the session was created (or
+  since dispatch) and the PR number, then — for a unit waiting on a human — the reason.
 - **Submenu** of each unit: the last useful line on the agent's screen (`tmux capture-pane`),
   the branch, **Open PR**, **Attach** (opens a terminal attached to the session) and
   **Copy attach command**.
@@ -27,7 +78,7 @@ kitchen). It turns orange when a unit is waiting on a human or there is a diverg
   | `🔄` row, dead session, no `done` marker | the agent crashed (or the machine rebooted) mid-task |
   | live session whose unit wrote `done` | finished and hibernated — kill the session to free RAM |
 
-- Footer: when it last ran, **Refresh now**, **Open manifests folder**.
+- Footer: when it last ran, **Refresh now**, **Open manifests folder**, each with an icon.
 
 A live session does not mean the agent is working; the manifest row is the fine signal, and
 this widget puts both side by side. See [manifest.md](manifest.md#reconciling-after-a-crash-or-reboot)
@@ -35,7 +86,12 @@ for the reconciliation rules it mirrors.
 
 ## Install
 
-Requirements: macOS, `python3`, `tmux`.
+Requirements: macOS, `python3`, `tmux`, and **SwiftBar 2.0 or newer** (checked on 2.1.1).
+The menu is drawn with the `sfimage`, `sfcolor` and `sfsize` parameters; a SwiftBar that
+predates them ignores those parameters, so every line still carries its text and the menu stays
+readable — only the icons and colours go away, and the bar then shows just the counts. The
+`terminal` and `clock.arrow.circlepath` symbols need macOS 12 or newer; on macOS 11 those two
+items simply have no icon.
 
 1. Install SwiftBar: `brew install --cask swiftbar`, open it once and choose a plugin
    folder (any folder works; SwiftBar suggests one under `~/Library/Application Support`).

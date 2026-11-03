@@ -153,7 +153,7 @@ main session, with normal permission prompts.
 ## Menu-bar widget (macOS)
 
 `menubar/kitchen.30s.py` is a [SwiftBar](https://github.com/swiftbar/SwiftBar) plugin that
-keeps `🍳 🔄2 ⏳1 ✅3` in your menu bar: units by state, a menu with what each agent is doing
+keeps a flame and `▸2 !1` (running, waiting on you) in your menu bar: units by state, a menu with what each agent is doing
 right now (Open PR · Attach · Copy attach command), and **divergences** — a live session with
 no manifest row, a `🔄` row whose session died without a `done` marker (a crash), a finished
 session still holding RAM. Zero tokens; it only reads manifests and `tmux`. Setup and

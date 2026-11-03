@@ -14,9 +14,10 @@ kitchen — macOS menu-bar widget (SwiftBar plugin) for claude-code-kitchen. Zer
 
 Reads the batch manifests (docs/manifest.md) and the tmux sessions, and shows:
 
-  title   🍳 🔄2 ⏳1 ✅3        unit counts by state (only the non-zero ones)
-  menu    one item per unit, grouped by state; submenu = what the agent is doing right now,
-          Open PR / Attach / Copy attach command
+  title   a flame SF Symbol + running / waiting counts (▸2 !1); the symbol turns orange when a
+          unit waits on you and red on a divergence — nothing else is added to the bar
+  menu    one item per unit, grouped by state, with a gray metadata line under its name;
+          submenu = what the agent is doing right now, Open PR / Attach / Copy attach command
   alerts  divergences — the failure modes nobody sees until they look:
             · a live session with no manifest row
             · a 🔄 row whose session is dead and which left no `done` marker (a crash)
@@ -70,13 +71,19 @@ EMOJI = {"🚫": "aborted", "✅": "done", "⏳": "waiting", "🔄": "running", 
          "🧹": "harvested"}
 STATES = ("running", "waiting", "queued", "done", "aborted", "harvested", "unknown")
 ACTIVE = ("running", "waiting", "queued")
-ICON = {"running": "🔄", "waiting": "⏳", "queued": "⏸", "done": "✅", "aborted": "🚫",
-        "harvested": "🧹", "unknown": "❔"}
-TITLE_STATES = ("running", "waiting", "queued", "done")
-LABEL = {"waiting": "Waiting on human", "running": "Running", "queued": "Queued",
-         "done": "PR open / done", "aborted": "Aborted", "harvested": "Harvested",
+# SF Symbol per state (group header) and the colour that carries its meaning. Colours are
+# "light,dark" pairs so they read on both menu appearances.
+SYMBOL = {"running": "play.fill", "waiting": "hand.raised.fill", "queued": "hourglass",
+          "done": "checkmark.circle.fill", "aborted": "xmark.circle", "harvested": "archivebox",
+          "unknown": "questionmark.circle"}
+TONE = {"running": "#0a60d0,#4da3ff", "waiting": "#c25400,#ff9f0a", "queued": "#6e6e73,#98989d",
+        "done": "#1f8a3b,#32d74b", "aborted": "#6e6e73,#98989d", "harvested": "#6e6e73,#98989d",
+        "unknown": "#6e6e73,#98989d", "attention": "#d70015,#ff453a"}
+MUTED = "#6e6e73,#98989d"
+LABEL = {"waiting": "Waiting on you", "running": "Running", "queued": "Queued",
+         "done": "Done", "aborted": "Aborted", "harvested": "Harvested",
          "unknown": "Unknown state"}
-ATTENTION = "#d9480f,#ff9f0a"
+DONE_RECENT = 86400   # finished units whose manifest changed longer ago than this fold away
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 PR_URL_IN_CELL = re.compile(r"https?://[^\s)>\]|]+")
@@ -256,7 +263,7 @@ def _row(cells, col):
     return {"unit": cells[0], "size": _cell(cells, col["size"]), "route": _cell(cells, col["route"]),
             "status": status, "state_cell": state_cell, "reason": reason, "branch": branch.strip(),
             "worktree": worktree, "pr": pr, "pr_url": pr_url,
-            "project": "", "dispatched": None, "manifest": ""}
+            "project": "", "dispatched": None, "manifest": "", "mtime": None}
 
 
 def load_rows(cfg, now):
@@ -291,7 +298,8 @@ def load_rows(cfg, now):
             if r["unit"] in seen:
                 continue
             seen.add(r["unit"])
-            r.update(project=parsed["project"], dispatched=parsed["dispatched"], manifest=path)
+            r.update(project=parsed["project"], dispatched=parsed["dispatched"], manifest=path,
+                     mtime=mtime)
             rows.append(r)
     return rows
 
@@ -424,7 +432,7 @@ def build_model(cfg, rows, tmux, now, done_exists=os.path.isfile):
             continue
         if r["status"] == "running" and not alive and not done:
             divergences.append({"kind": "crash", "unit": r["unit"], "session": None,
-                                "text": f"{r['unit']}: marked 🔄 but its session is gone and left "
+                                "text": f"{r['unit']}: marked running but its session is gone and left "
                                         "no done marker (crashed?)"})
         elif alive and done:
             divergences.append({"kind": "reapable", "unit": r["unit"], "session": session,
@@ -450,6 +458,24 @@ def _q(value):
     return f'"{value}"' if re.search(r"\s", value) else value
 
 
+def _line(text, depth=0, **params):
+    """One menu line: `<--*>text | k=v …`. Empty params are dropped; an empty text gives an
+    image-only item (`| sfimage=flame`)."""
+    rest = " ".join(f"{k}={_q(v)}" for k, v in params.items() if v not in (None, ""))
+    text = "--" * depth + text
+    if not rest:
+        return text
+    return f"{text} | {rest}" if text else f"| {rest}"
+
+
+def _sym(symbol, tone):
+    return {"sfimage": symbol, "sfcolor": TONE.get(tone, tone)}
+
+
+def _muted(text, depth=0, **params):
+    return _line(text, depth, size=11, color=MUTED, **params)
+
+
 def _pr_link(cfg, entry):
     url = entry["pr_url"]
     if not url and entry["pr"]:
@@ -463,78 +489,117 @@ def _action(script, verb, session):
     return f"bash={_q(script)} param1={verb} param2={_q(session)} terminal=false refresh=false"
 
 
-def _session_actions(script, session, prefix="--"):
-    return [f"{prefix}Attach | {_action(script, 'attach', session)}",
-            f"{prefix}Copy attach command | {_action(script, 'copy', session)}"]
+def _session_actions(script, session, depth=1):
+    pre = "--" * depth
+    return [f"{pre}Attach | sfimage=terminal {_action(script, 'attach', session)}",
+            f"{pre}Copy attach command | sfimage=doc.on.doc {_action(script, 'copy', session)}"]
+
+
+def title_line(model):
+    """Menu-bar title: flame symbol + (running, waiting) counts. Colour/symbol carry the alarm."""
+    counts = model["counts"]
+    if model["divergences"]:
+        symbol, tone = "exclamationmark.triangle.fill", "attention"
+    elif counts["waiting"]:
+        symbol, tone = "flame.fill", "waiting"
+    elif counts["running"]:
+        symbol, tone = "flame.fill", None
+    else:
+        symbol, tone = "flame", None
+    bits = []
+    if counts["running"]:
+        bits.append(f"▸{counts['running']}")
+    if counts["waiting"]:
+        bits.append(f"!{counts['waiting']}")
+    color = TONE[tone] if tone else None
+    return _line(" ".join(bits), sfimage=symbol, sfcolor=color, color=color)
 
 
 def render(model, cfg, now, script, warning=None, panes=None):
     panes = panes or {}
-    counts, divs = model["counts"], model["divergences"]
-    title = ["🍳"] + [f"{ICON[s]}{counts[s]}" for s in TITLE_STATES if counts[s]]
-    if divs:
-        title.append(f"⚠️{len(divs)}")
-    head = " ".join(title)
-    if counts["waiting"] or divs:
-        head += f" | color={ATTENTION}"
-    out = [head, "---"]
+    divs = model["divergences"]
+    out = [title_line(model), "---"]
     if warning:
-        out.append(f"⚠️ {clean(warning, 100)} | color=red")
+        out.append(_line(clean(warning, 100), **_sym("exclamationmark.triangle.fill", "attention"),
+                         color=TONE["attention"]))
     if model["tmux_reason"]:
-        out.append(f"tmux unavailable: {clean(model['tmux_reason'])} — showing manifests only"
-                   " | color=gray")
+        out.append(_muted(f"tmux unavailable: {clean(model['tmux_reason'])} — showing manifests only",
+                          sfimage="bolt.slash", sfcolor=MUTED))
     if divs:
-        out.append(f"⚠️ Divergences ({len(divs)}) | size=11 color=gray")
+        out.append(_line(f"Needs attention ({len(divs)})", size=11, color=TONE["attention"],
+                         **_sym("exclamationmark.triangle.fill", "attention")))
         for d in divs:
-            out.append(f"⚠️ {clean(d['text'], 100)}")
+            out.append(_line(clean(d["text"], 100), sfimage="circle.fill", sfcolor=TONE["attention"],
+                             sfsize=8))
             if d["session"] and safe_name(d["session"]):
                 out.extend(_session_actions(script, d["session"]))
         out.append("---")
     if not model["entries"]:
-        if not model["globs"]:
-            out.append("No manifest globs configured — see docs/menubar.md | color=gray")
-        else:
-            out.append("No manifest rows found (check the globs in the config) | color=gray")
+        hint = ("No manifest globs configured — see docs/menubar.md" if not model["globs"]
+                else "No manifest rows found (check the globs in the config)")
+        out.append(_muted(hint, sfimage="tray", sfcolor=MUTED))
     for status in ("waiting", "running", "queued", "done", "aborted", "unknown"):
         group = [e for e in model["entries"] if e["status"] == status]
         if not group:
             continue
-        out.append(f"{LABEL[status]} ({len(group)}) | size=11 color=gray")
+        older = []
+        if status == "done":
+            older = [e for e in group if e["mtime"] is not None and now - e["mtime"] > DONE_RECENT]
+            group = [e for e in group if e not in older]
+        out.append(_line(f"{LABEL[status]} ({len(group) + len(older)})", size=11, color=TONE[status],
+                         **_sym(SYMBOL[status], status)))
         for e in group:
             out.extend(_item(e, cfg, script, panes))
-    if counts["harvested"]:
-        out.append(f"🧹 {counts['harvested']} harvested (hidden) | size=11 color=gray")
+        if older:
+            out.append(_line(f"Earlier ({len(older)})", **_sym("clock.arrow.circlepath", "done")))
+            for e in older:
+                link = _pr_link(cfg, e)
+                out.append(_line(_title(e, with_pr=True), 1, href=link or None))
+    if model["counts"]["harvested"]:
+        out.append(_muted(f"{model['counts']['harvested']} harvested (hidden)",
+                          **_sym(SYMBOL["harvested"], "harvested")))
     out.append("---")
-    out.append(f"Updated {time.strftime('%H:%M', time.localtime(now))} | color=gray")
-    out.append("Refresh now | refresh=true")
+    out.append(_muted(f"Updated {time.strftime('%H:%M', time.localtime(now))}", sfimage="clock",
+                      sfcolor=MUTED))
+    out.append(_line("Refresh now", sfimage="arrow.clockwise", refresh="true"))
     if model["manifest_dir"]:
-        out.append(f"Open manifests folder | bash=/usr/bin/open param1={_q(model['manifest_dir'])}"
-                   " terminal=false")
+        out.append(_line("Open manifests folder", sfimage="folder", bash="/usr/bin/open",
+                         param1=model["manifest_dir"], terminal="false"))
     return "\n".join(out)
 
 
+def _title(e, with_pr=False):
+    text = clean(e["unit"], 48)
+    if with_pr and e["pr"]:
+        text += f" · PR #{e['pr']}"
+    return text
+
+
 def _item(e, cfg, script, panes):
-    bits = [f"{ICON[e['status']]} {clean(e['unit'])}"]
-    if e["project"]:
-        bits.append(clean(e["project"], 40))
-    if e["age"] is not None:
-        bits.append(fmt_age(e["age"]))
-    if e["pr"]:
-        bits.append(f"PR #{e['pr']}")
-    line = " · ".join(bits)
-    if e["reason"]:
-        line += " — " + clean(e["reason"], 60)
-    lines = [line]
+    """Name line (with its submenu), then a small gray metadata line, then the ⏳ reason."""
+    status = e["status"]
     pane = panes.get(e["session"]) if e["session"] else ""
-    if pane:
-        lines.append(f"--{pane} | size=11 color=gray")
     link = _pr_link(cfg, e)
+    has_branch = e["branch"] and e["branch"] not in ("—", "–", "-") and not e["branch"].startswith("(")
+    lines = [_line(_title(e), sfimage="circle.fill", sfcolor=TONE[status], sfsize=8)]
+    if pane:
+        lines.append(_muted(pane, 1, sfimage="text.alignleft", sfcolor=MUTED))
     if link:
-        lines.append(f"--Open PR #{e['pr']} | href={link}")
-    if e["branch"] and e["branch"] not in ("—", "–", "-") and not e["branch"].startswith("("):
-        lines.append(f"--branch: {clean(e['branch'], 60)} | size=11 color=gray")
+        lines.append(_line(f"Open PR #{e['pr']}", 1, sfimage="arrow.up.right.square", href=link))
+    if has_branch:
+        lines.append(_muted(f"branch: {clean(e['branch'], 60)}", 1, sfimage="arrow.triangle.branch",
+                            sfcolor=MUTED))
     if e["alive"] and e["session"] and safe_name(e["session"]):
         lines.extend(_session_actions(script, e["session"]))
+    meta = [clean(e["project"], 40)] if e["project"] else []
+    if e["age"] is not None:
+        meta.append(fmt_age(e["age"]))
+    if e["pr"]:
+        meta.append(f"PR #{e['pr']}")
+    if meta:
+        lines.append(_muted("   " + " · ".join(meta)))
+    if e["reason"]:
+        lines.append(_line("   " + clean(e["reason"], 70), size=12, color=TONE[status]))
     return lines
 
 
@@ -604,8 +669,10 @@ def main(argv):
                 panes[e["session"]] = pane_summary(cfg, e["session"])
         print(render(model, cfg, now, os.path.abspath(__file__), warning=warning, panes=panes))
     except Exception as e:  # the menu bar must never show a traceback
-        print(f"🍳\n---\nkitchen plugin error: {clean(type(e).__name__ + ': ' + str(e), 100)}"
-              " | color=red")
+        print(_line("", sfimage="exclamationmark.triangle.fill", sfcolor=TONE["attention"]))
+        print("---")
+        print(_line("kitchen plugin error: " + clean(type(e).__name__ + ": " + str(e), 100),
+                    color=TONE["attention"]))
     return 0
 
 
