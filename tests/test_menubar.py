@@ -800,3 +800,140 @@ def test_real_tmux_format(mod, private_tmux, tmp_path):
     # a socket nobody started → clean empty result
     t2 = mod.list_sessions(dict(mod.DEFAULTS, socket=private_tmux + "-nobody"))
     assert t2["ok"] and t2["sessions"] == []
+
+
+# ---------------------------------------------------------------- --json (the macOS app's input)
+
+def _json_model(mod, cfg, tmp_path, sessions=(), panes=None, **cfg_over):
+    write(tmp_path / "m-manifest.md", EN_MANIFEST)
+    cfg = dict(cfg, **cfg_over)
+    rows = mod.load_rows(cfg, NOW)
+    tmux = mod.list_sessions(cfg, run=fake_run(tmux_ls(*sessions)))
+    return cfg, mod.build_model(cfg, rows, tmux, NOW)
+
+
+def test_to_json_shape_and_counts(mod, cfg, tmp_path):
+    cfg, model = _json_model(mod, cfg, tmp_path,
+                             sessions=[("kitchen-rate-limit", int(NOW) - 754, str(tmp_path))])
+    out = mod.to_json(model, cfg, NOW, warning=None, panes={"kitchen-rate-limit": "Running tests"})
+    assert out["schema"] == 1 and out["error"] is None and out["warning"] is None
+    assert out["generated_at"] == NOW
+    assert out["counts"]["running"] == 1 and out["counts"]["waiting"] == 1
+    assert out["globs"] == 1 and out["tmux_reason"] == ""
+    assert out["manifest_dir"] == str(tmp_path)
+    by = {u["unit"]: u for u in out["units"]}
+    assert list(by) == ["rate-limit", "export-csv", "login-fix", "old-idea", "new-ui"]
+    rl = by["rate-limit"]
+    assert rl["session"] == "kitchen-rate-limit" and rl["alive"] is True and rl["done"] is False
+    assert rl["age_seconds"] == pytest.approx(754, abs=1) and rl["age_text"] == "12m"
+    assert rl["pane"] == "Running tests"
+    assert rl["attach_command"] == "tmux attach -t '=kitchen-rate-limit'"
+    assert rl["project"] == "demo-app" and rl["branch"] == "feat/rate-limit"
+    ex = by["export-csv"]
+    assert ex["status"] == "waiting" and ex["reason"] == "pick the CSV dialect"
+    assert ex["session"] is None and ex["attach_command"] is None and ex["pane"] == ""
+    assert by["new-ui"]["age_seconds"] is None and by["new-ui"]["age_text"] is None
+
+
+def test_to_json_resolves_pr_links_and_only_http(mod, cfg, tmp_path):
+    cfg, model = _json_model(mod, cfg, tmp_path, pr_url="https://example.com/r/pull/{n}")
+    by = {u["unit"]: u for u in mod.to_json(model, cfg, NOW)["units"]}
+    assert by["login-fix"]["pr"] == "42"
+    assert by["login-fix"]["pr_link"] == "https://example.com/r/pull/42"
+    assert by["rate-limit"]["pr_link"] is None
+    cfg2, model2 = _json_model(mod, cfg, tmp_path, pr_url="javascript:alert({n})")
+    by2 = {u["unit"]: u for u in mod.to_json(model2, cfg2, NOW)["units"]}
+    assert by2["login-fix"]["pr_link"] is None
+
+
+def test_to_json_recent_flag_folds_old_done_units(mod, cfg, tmp_path):
+    write(tmp_path / "m-manifest.md", EN_MANIFEST, age_days=2)
+    rows = mod.load_rows(cfg, NOW)
+    model = mod.build_model(cfg, rows, {"ok": True, "sessions": [], "reason": ""}, NOW)
+    by = {u["unit"]: u for u in mod.to_json(model, cfg, NOW)["units"]}
+    assert by["login-fix"]["recent"] is False
+    assert by["rate-limit"]["recent"] is True   # only finished units fold
+
+
+def test_to_json_divergences_carry_attach_command_only_when_safe(mod, cfg, tmp_path):
+    cfg, model = _json_model(mod, cfg, tmp_path, sessions=[
+        ("kitchen-stray", int(NOW) - 60, str(tmp_path)),
+        ("kitchen-bad;rm", int(NOW) - 60, str(tmp_path))])
+    divs = {d["unit"]: d for d in mod.to_json(model, cfg, NOW)["divergences"]}
+    assert divs["kitchen-stray"]["kind"] == "orphan"
+    assert divs["kitchen-stray"]["attach_command"] == "tmux attach -t '=kitchen-stray'"
+    assert divs["kitchen-bad;rm"]["attach_command"] is None
+    crash = [d for d in divs.values() if d["kind"] == "crash"]
+    assert crash and crash[0]["session"] is None and crash[0]["attach_command"] is None
+
+
+def test_to_json_unsafe_socket_disables_attach_commands(mod, cfg, tmp_path):
+    cfg, model = _json_model(mod, cfg, tmp_path, socket="bad sock",
+                             sessions=[("kitchen-rate-limit", int(NOW), str(tmp_path))])
+    by = {u["unit"]: u for u in mod.to_json(model, cfg, NOW)["units"]}
+    assert by["rate-limit"]["alive"] is True and by["rate-limit"]["attach_command"] is None
+
+
+def test_to_json_socket_appears_in_attach_command(mod, cfg, tmp_path):
+    cfg, model = _json_model(mod, cfg, tmp_path, socket="work",
+                             sessions=[("kitchen-rate-limit", int(NOW), str(tmp_path))])
+    by = {u["unit"]: u for u in mod.to_json(model, cfg, NOW)["units"]}
+    assert by["rate-limit"]["attach_command"] == "tmux -L work attach -t '=kitchen-rate-limit'"
+
+
+def test_to_json_carries_warning_and_tmux_reason(mod, cfg, tmp_path):
+    write(tmp_path / "m-manifest.md", EN_MANIFEST)
+    rows = mod.load_rows(cfg, NOW)
+    model = mod.build_model(cfg, rows, {"ok": False, "sessions": [], "reason": "tmux not found"}, NOW)
+    out = mod.to_json(model, cfg, NOW, warning="config error: x")
+    assert out["warning"] == "config error: x" and out["tmux_reason"] == "tmux not found"
+    assert out["divergences"] == []
+
+
+def test_to_json_has_no_credential_or_usage_fields(mod, cfg, tmp_path):
+    cfg, model = _json_model(mod, cfg, tmp_path)
+    out = mod.to_json(model, cfg, NOW)
+    keys = set(out) | {k for u in out["units"] for k in u} | {k for d in out["divergences"] for k in d}
+    for word in ("token", "credential", "oauth", "usage", "keychain", "bearer"):
+        assert not [k for k in keys if word in k.lower()], word
+
+
+def test_main_json_prints_one_object(mod, monkeypatch, tmp_path, capsys):
+    write(tmp_path / "m-manifest.md", EN_MANIFEST)
+    cfgfile = tmp_path / "c.json"
+    cfgfile.write_text(json.dumps({"manifests": [str(tmp_path / "*manifest*.md")],
+                                   "tmux": str(tmp_path / "no-such-tmux")}))
+    monkeypatch.setenv("KITCHEN_MENUBAR_CONFIG", str(cfgfile))
+    assert mod.main(["--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["schema"] == 1 and out["tmux_reason"] == "tmux not found"
+    assert len(out["units"]) == 5
+
+
+def test_main_json_collects_panes_of_live_units(mod, monkeypatch, tmp_path, capsys):
+    write(tmp_path / "m-manifest.md", EN_MANIFEST)
+    cfgfile = tmp_path / "c.json"
+    cfgfile.write_text(json.dumps({"manifests": [str(tmp_path / "*manifest*.md")]}))
+    monkeypatch.setenv("KITCHEN_MENUBAR_CONFIG", str(cfgfile))
+    monkeypatch.setattr(mod, "list_sessions", lambda cfg: {
+        "ok": True, "reason": "",
+        "sessions": [{"name": "kitchen-rate-limit", "created": int(time.time()), "path": str(tmp_path)}]})
+    monkeypatch.setattr(mod, "pane_summary", lambda cfg, s: "editing foo.py")
+    assert mod.main(["--json"]) == 0
+    by = {u["unit"]: u for u in json.loads(capsys.readouterr().out)["units"]}
+    assert by["rate-limit"]["pane"] == "editing foo.py"
+
+
+def test_main_json_survives_unexpected_error(mod, monkeypatch, capsys):
+    monkeypatch.setattr(mod, "list_sessions", lambda *a, **k: 1 / 0)
+    assert mod.main(["--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["schema"] == 1 and out["error"].startswith("ZeroDivisionError")
+    assert out["units"] == [] and out["divergences"] == []
+
+
+def test_main_without_json_still_prints_the_swiftbar_menu(mod, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(mod, "list_sessions", lambda *a, **k: {"ok": True, "sessions": [], "reason": ""})
+    assert mod.main([]) == 0
+    out = capsys.readouterr().out
+    assert not out.lstrip().startswith("{") and "---" in out
