@@ -50,13 +50,38 @@ private var utc: Calendar {
         #expect(MenuBarLabel(model: model).spokenLabel == base)
     }
 
+    /// Header + divider + footer, with no list: the size a collapsed list area renders at.
+    static let chromeAllowance: CGFloat = 160
+
+    private func renderedSize(_ model: AppModel, _ scheme: ColorScheme = .light) throws -> CGSize {
+        // One render pass with an unspecified proposal, like the menu-bar window sizing to fit.
+        let renderer = ImageRenderer(content: PanelView(model: model).environment(\.colorScheme, scheme))
+        return try #require(renderer.nsImage).size
+    }
+
+    /// The demo's content is taller than the cap, so the list area must be exactly at the cap
+    /// on the very first render (no measure-then-resize round trip): at least `maxListHeight`,
+    /// at most the cap plus the header and footer.
     @Test(arguments: [ColorScheme.light, .dark])
-    func panelRenders(scheme: ColorScheme) throws {
-        let view = PanelView(model: DemoData.model(calendar: utc)).environment(\.colorScheme, scheme)
-        let renderer = ImageRenderer(content: view)
-        let image = try #require(renderer.nsImage)
-        #expect(image.size.width == Theme.panelWidth)
-        #expect(image.size.height > 200)
+    func tallPanelRendersAtTheListCap(scheme: ColorScheme) throws {
+        let size = try renderedSize(DemoData.model(calendar: utc), scheme)
+        #expect(size.width == Theme.panelWidth)
+        #expect(size.height >= Theme.maxListHeight)
+        #expect(size.height <= Theme.maxListHeight + Self.chromeAllowance)
+    }
+
+    /// A short panel hugs its content: taller than the chrome alone (the list is not collapsed)
+    /// and shorter than the capped demo.
+    @Test func shortPanelHugsItsContent() throws {
+        let one = try KitchenSnapshot.decode(Data(#"""
+            {"schema": 1, "globs": 1, "counts": {"running": 1},
+             "units": [{"unit": "solo", "project": "demo-app", "status": "running", "alive": true}]}
+            """#.utf8))
+        let short = try renderedSize(AppModel(demo: one, usage: .ok(DemoData.usage, fetchedAt: DemoData.now),
+                                              now: DemoData.now, calendar: utc))
+        let tall = try renderedSize(DemoData.model(calendar: utc))
+        #expect(short.height > Self.chromeAllowance + 100)  // header/footer + usage card + one row
+        #expect(short.height < tall.height - 100)
     }
 
     @Test func usageCardRendersEveryState() throws {

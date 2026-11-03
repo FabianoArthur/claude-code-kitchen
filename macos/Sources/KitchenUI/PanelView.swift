@@ -4,7 +4,6 @@ import SwiftUI
 /// The menu-bar panel: header, banners, usage, attention, unit sections, footer.
 public struct PanelView: View {
     @Bindable var model: AppModel
-    @State private var listHeight: CGFloat = 0
     @State private var earlierOpen = false
     @Namespace private var glass
 
@@ -24,10 +23,12 @@ public struct PanelView: View {
                         .padding(.horizontal, Theme.margin)
                         .padding(.bottom, Theme.row)
                 }
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
             }
             .scrollBounceBehavior(.basedOnSize)
-            .frame(height: min(max(listHeight, 1), Theme.maxListHeight))
+            // Hug the content up to the cap, then scroll — decided in one layout pass. (A measured
+            // @State height was 0 on the first frame, so the panel opened as header + footer.)
+            .frame(maxHeight: Theme.maxListHeight)
+            .fixedSize(horizontal: false, vertical: true)
             Divider()
             footer
                 .padding(.horizontal, Theme.margin)
