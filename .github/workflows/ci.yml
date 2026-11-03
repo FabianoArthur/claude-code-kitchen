@@ -49,9 +49,30 @@ jobs:
       - name: Install zsh
         run: sudo apt-get update -q && sudo apt-get install -y -q zsh
       - name: shellcheck
-        run: shellcheck --version && shellcheck install.sh
+        run: shellcheck --version && shellcheck install.sh macos/scripts/*.sh
       - name: zsh -n
         run: zsh -n shell/zshrc-guard.zsh
+
+  macos:
+    name: macOS app — swift build, swift test
+    runs-on: macos-26
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: macos
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select the newest Xcode 26
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+          echo "using $xcode"
+      - name: swift build (zero warnings)
+        run: swift --version && swift build -Xswiftc -warnings-as-errors
+      - name: swift test (the tests never touch the Keychain or the network)
+        run: swift test
 
   # Dependabot bumps the Actions and requirements-dev.txt. The versions pinned in this file
   # (markdownlint-cli2 via npx, lychee and gitleaks with their sha256) are bumped by hand.
