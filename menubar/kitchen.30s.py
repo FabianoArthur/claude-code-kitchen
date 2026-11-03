@@ -14,8 +14,9 @@ kitchen — macOS menu-bar widget (SwiftBar plugin) for claude-code-kitchen. Zer
 
 Reads the batch manifests (docs/manifest.md) and the tmux sessions, and shows:
 
-  title   a flame SF Symbol + running / waiting counts (▸2 !1); the symbol turns orange when a
-          unit waits on you and red on a divergence — nothing else is added to the bar
+  title   a flame SF Symbol + running / waiting counts (▸2 !1); the counts turn orange when a
+          unit waits on you; on a divergence the symbol becomes a red-tinted triangle and the
+          counts turn red — nothing else is added to the bar
   menu    one item per unit, grouped by state, with a gray metadata line under its name;
           submenu = what the agent is doing right now, Open PR / Attach / Copy attach command
   alerts  divergences — the failure modes nobody sees until they look:

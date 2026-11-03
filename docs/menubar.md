@@ -7,17 +7,19 @@ asks tmux for the session list, every 30 seconds.
 
 The bar shows a flame SF Symbol and, next to it, only what asks for your attention: how many
 units are running (`▸`) and how many are waiting on you (`!`). Nothing else is added to the bar —
-the *symbol and its colour* carry the alarm:
+the *symbol and the colour of the counts* carry the alarm:
 
 | state | bar | symbol |
 |---|---|---|
 | empty, or only queued / done units | *(symbol only)* | `flame`, system colour |
 | units running | `▸2` | `flame.fill`, system colour |
-| a unit waits on you | `▸2 !1` | `flame.fill`, **orange** |
-| a divergence (see below) | `▸2 !1` | `exclamationmark.triangle.fill`, **red** |
+| a unit waits on you | `▸2 !1` | `flame.fill`, counts **orange** |
+| a divergence (see below) | `▸2 !1` | `exclamationmark.triangle.fill`, counts **red** |
 
 Colours are `light,dark` pairs, so they read on both menu appearances; the calm states use the
-system colour and follow the menu bar tint.
+system colour and follow the menu bar tint. On SwiftBar 2.1.1 the menu-bar symbol itself is
+drawn in the bar's own tint (the `sfcolor` is not applied to the title), so the colour shows
+on the counts and the symbol *changes shape* on a divergence.
 
 ## Before and after
 

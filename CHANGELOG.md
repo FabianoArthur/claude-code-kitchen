@@ -17,7 +17,7 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - `menubar/kitchen.30s.py`: native look. The bar is a flame SF Symbol plus the running and
-  waiting counts (orange symbol when a unit waits on you, red triangle on a divergence)
+  waiting counts (counts turn orange when a unit waits on you; a divergence swaps the flame for a triangle and turns them red)
   instead of a row of emojis. The menu has coloured SF Symbol group headers (empty groups are
   hidden), the unit name on its own line with a small gray metadata line under it, icons on
   every action, light/dark colour pairs, and a collapsed **Earlier** submenu for units that
