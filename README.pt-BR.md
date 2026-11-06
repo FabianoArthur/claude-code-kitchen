@@ -36,6 +36,8 @@ português, a correspondência é esta:
 | `/executar` | `/execute` | o motor de uma unidade (o que a cozinha roda) |
 | `/qa` | `/qa` | rodada de QA com orçamento: fatos → matriz → gates → veredito |
 | `/colher` | `/harvest` | depois do merge: limpa o que foi mergeado de fato |
+| `/salvar` | `/save` | fim da sessão: grava estado, pendências e uma entrada de log no doc da tarefa (só local) |
+| `/retomar` | `/resume` | começo da sessão: lê o doc, o manifesto e o git; diz estado · feito · pendente · UM próximo passo |
 | `NUCLEO.md` | `CORE.md` | as regras que todas as skills seguem |
 | `.claude/orquestrador.md` | `.claude/orchestrator.md` | o adapter do repositório |
 | Raio de alcance | blast radius | os arquivos que o plano declara que vai tocar |
@@ -114,6 +116,9 @@ Você vai precisar de: [Claude Code](https://docs.claude.com/en/docs/claude-code
    quando o PR subir.
 9. Depois do merge: `/harvest`.
 
+Entre sessões: `/save` grava onde você parou no doc da tarefa (local, sem chamar tracker);
+`/resume` lê de volta, junto com o manifesto e o git, e diz o único próximo passo.
+
 Quer experimentar antes de mexer num repositório de verdade? Siga o
 [`examples/demo-project`](examples/demo-project/README.md) (em inglês).
 
@@ -127,6 +132,8 @@ Quer experimentar antes de mexer num repositório de verdade? Siga o
 | `/execute <id>` | o motor de uma unidade (o que a sessão da cozinha roda) |
 | `/qa <alvo>` | rodada de QA com orçamento: fatos → matriz de casos → gates → veredito com evidência |
 | `/harvest` | depois do merge: limpa só o que comprovadamente foi mergeado |
+| `/save [id]` | fim da sessão: grava estado, pendências e uma entrada de log no doc da tarefa — só local, marca `sync_pending` |
+| `/resume [id]` | começo da sessão: lê o doc da tarefa, o manifesto e o git; diz estado · feito · pendente · **um** próximo passo; não começa a trabalhar |
 
 ## Conceitos
 
@@ -266,13 +273,13 @@ links (em inglês): [docs/toolkit.md](docs/toolkit.md).
 ## Estrutura do repositório
 
 ```
-skills/            as seis skills (a orchestrate guarda o CORE.md, as regras comuns)
+skills/            as oito skills (a orchestrate guarda o CORE.md, as regras comuns)
   orchestrate/scripts/  dispatcher.py · doctor.py · gate_diff.py · watch.py
   qa/scripts/           qa_preflight · qa_matrix · qa_budget · qa_report · qa_filter · qa_mutation · qa_watcher
 menubar/           plugin do SwiftBar: a cozinha na barra de menu do macOS
 macos/             app nativo de barra de menu (SwiftUI, Liquid Glass) com o uso do Claude
 shell/             proteção opcional do zsh para shells que não são de humanos
-examples/          adapter, adapter de QA, doc de tarefa, projeto de demonstração
+examples/          adapter, adapter de QA, doc de tarefa (antes e depois do /save), projeto de demonstração
 docs/              arquitetura, adapter, manifesto, gates, QA, integrações, toolkit, barra de menu, solução de problemas
 tests/             testes com pytest (rodam também o --selftest de cada script)
 install.sh         instalador por symlink (--dry-run, --uninstall, --yes)

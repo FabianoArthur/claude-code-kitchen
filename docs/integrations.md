@@ -72,3 +72,21 @@ UI cases in `/qa` run inline in the waiter with whatever browser automation you 
 example the Claude in Chrome extension). Kitchens have no MCP servers, so browser cases are
 never dispatched. A headless Playwright route is described, dormant, in
 [`skills/qa/references/browser.md`](../skills/qa/references/browser.md).
+
+## Session memory: `/save` and `/resume`
+
+Optional, and tracker-free by design. A task doc is the memory between sessions:
+
+- `/save` rewrites `## Current state`, updates `## Pending`, **prepends** an entry to
+  `## Session log` (Changed · Decisions · Pending), sets `updated:` and `sync_pending: true`.
+  Doc location comes from `vault.cards`; status words from `backlog.*`. It never commits,
+  pushes or calls a tracker.
+- `/resume` reads the doc, its `## Links`, the manifest rows (⏸ 🔄 ⏳ ✅ 🚫) and git (plus a
+  code graph if you have one), then says state · done · pending · **one** next step. It warns
+  about `sync_pending: true` and suggests `/harvest` for a merged PR. It does not start work.
+
+`sync_pending` is the only link to a tracker: whatever pushes to it (your `status_push`
+command, or you by hand) clears the flag. Nothing in the kitchen does that for you, so
+saving stays free and a stale tracker is visible instead of silent. Example of the same doc
+before and after a save: [`examples/task.md`](../examples/task.md) and
+[`examples/task-saved.md`](../examples/task-saved.md).

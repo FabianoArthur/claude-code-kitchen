@@ -34,7 +34,7 @@ The QA adapter (`.claude/qa.md`): [`examples/qa.md`](../examples/qa.md).
 | `consumers` | no | repos that consume this repo's public surface (downstream-break check). |
 | `post_commit` | no | hook after each commit (e.g. refresh a code graph). |
 | `status_push` | no | pushes status to a tracker, once per epic at the end of a batch. |
-| `vault.cards`, `vault.plans`, `vault.permanent` | no | where task docs, plans/manifests and durable decisions live. |
+| `vault.cards`, `vault.plans`, `vault.permanent` | no | where task docs, plans/manifests and durable decisions live. `/save` and `/resume` need `vault.cards` (they ask if it is missing); `/resume` also reads manifests from `vault.plans`. |
 
 ## Parsing rules
 
