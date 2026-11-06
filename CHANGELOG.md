@@ -18,6 +18,22 @@ All notable changes to this project are documented here. The format follows
   never invented. `install.sh` picks them up; `examples/task-saved.md` shows a task doc after
   a save; documented in both READMEs, `docs/integrations.md`, `docs/architecture.md` and
   `docs/manifest.md`.
+- `sync` skill: the tracker half of the session-memory pair. `/sync` pushes task docs
+  marked `sync_pending: true` to a tracker (ClickUp is the first adapter) via
+  `skills/sync/scripts/sync_tracker.py` (standard library only): dry-run plan first, applied
+  only after the human's OK, one comment per pending log entry, card created only with that
+  OK, no default priority, status set only when the list knows it (`--no-status`), the token
+  read from an env var or a `chmod 600` file and redacted everywhere. `/save` now marks its
+  log entry `⏳ to sync`; `/sync` rewrites it to `✅ synced <date>` and clears the flag.
+  Configured by the adapter's new `tracker:` block; 30 offline tests with a mocked HTTP layer.
+- Optional defensive-security pack, `skills/security/`: eight skills (`seguranca-segredos`,
+  `-dependencias`, `-agentes`, `-api`, `-infra`, `-web-front`, `-dados-lgpd`,
+  `-bots-webhooks`) with `references/` — commands that prove each finding, a PreToolUse
+  fence with a test battery, a PII scanner, a webhook verifier, gitleaks rules and a
+  third-party-plugin checklist. Opt-in: `install.sh --with-security` (a plain install never
+  links them; `--uninstall` removes them). Published in Portuguese, the language they were
+  written and tested in. Company, project and person names and real-incident identifiers
+  were scrubbed from the source; the lessons stayed as anonymized examples.
 - `docs/toolkit.md` and an "Optional: the toolkit" section in both READMEs: the optional
   third-party tools the kitchen is run with, grouped (token and context savers RTK, graphify
   and context7; Claude Code plugins; usage monitors; gates; base tools). The kitchen requires

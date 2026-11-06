@@ -38,6 +38,8 @@ português, a correspondência é esta:
 | `/colher` | `/harvest` | depois do merge: limpa o que foi mergeado de fato |
 | `/salvar` | `/save` | fim da sessão: grava estado, pendências e uma entrada de log no doc da tarefa (só local) |
 | `/retomar` | `/resume` | começo da sessão: lê o doc, o manifesto e o git; diz estado · feito · pendente · UM próximo passo |
+| `/sync-clickup` | `/sync` | passo explícito: empurra os docs salvos (`sync_pending`) para o tracker, com plano em dry-run antes |
+| `seguranca-*` | `seguranca-*` | pacote opcional de 8 skills de segurança (só com `install.sh --with-security`); já escritas em português |
 | `NUCLEO.md` | `CORE.md` | as regras que todas as skills seguem |
 | `.claude/orquestrador.md` | `.claude/orchestrator.md` | o adapter do repositório |
 | Raio de alcance | blast radius | os arquivos que o plano declara que vai tocar |
@@ -118,6 +120,10 @@ Você vai precisar de: [Claude Code](https://docs.claude.com/en/docs/claude-code
 
 Entre sessões: `/save` grava onde você parou no doc da tarefa (local, sem chamar tracker);
 `/resume` lê de volta, junto com o manifesto e o git, e diz o único próximo passo.
+`/sync` é o passo separado e explícito que empurra os docs salvos para o seu tracker.
+
+Opcional: `./claude-code-kitchen/install.sh --with-security` instala também o
+[pacote de segurança defensiva](skills/security/README.md) (8 skills, já em português).
 
 Quer experimentar antes de mexer num repositório de verdade? Siga o
 [`examples/demo-project`](examples/demo-project/README.md) (em inglês).
@@ -134,6 +140,8 @@ Quer experimentar antes de mexer num repositório de verdade? Siga o
 | `/harvest` | depois do merge: limpa só o que comprovadamente foi mergeado |
 | `/save [id]` | fim da sessão: grava estado, pendências e uma entrada de log no doc da tarefa — só local, marca `sync_pending` |
 | `/resume [id]` | começo da sessão: lê o doc da tarefa, o manifesto e o git; diz estado · feito · pendente · **um** próximo passo; não começa a trabalhar |
+| `/sync [id]` | empurra os docs salvos (`sync_pending: true`) para o tracker — plano em dry-run primeiro, aplica só depois do seu OK; ClickUp é o primeiro adaptador e o token nunca entra no repo |
+| `seguranca-*` (8, opcionais) | o [pacote de segurança](skills/security/README.md): segredos, dependências, agentes, API, infra, front web, dados pessoais (LGPD), bots e webhooks. Só com `install.sh --with-security`; **escrito em português** (o README do pacote explica por quê) |
 
 ## Conceitos
 
@@ -273,7 +281,9 @@ links (em inglês): [docs/toolkit.md](docs/toolkit.md).
 ## Estrutura do repositório
 
 ```
-skills/            as oito skills (a orchestrate guarda o CORE.md, as regras comuns)
+skills/            as nove skills (a orchestrate guarda o CORE.md, as regras comuns)
+  sync/scripts/         sync_tracker.py (só stdlib, testado offline)
+  security/             pacote opcional: 8 skills `seguranca-*` com material executável
   orchestrate/scripts/  dispatcher.py · doctor.py · gate_diff.py · watch.py
   qa/scripts/           qa_preflight · qa_matrix · qa_budget · qa_report · qa_filter · qa_mutation · qa_watcher
 menubar/           plugin do SwiftBar: a cozinha na barra de menu do macOS
@@ -282,7 +292,7 @@ shell/             proteção opcional do zsh para shells que não são de human
 examples/          adapter, adapter de QA, doc de tarefa (antes e depois do /save), projeto de demonstração
 docs/              arquitetura, adapter, manifesto, gates, QA, integrações, toolkit, barra de menu, solução de problemas
 tests/             testes com pytest (rodam também o --selftest de cada script)
-install.sh         instalador por symlink (--dry-run, --uninstall, --yes)
+install.sh         instalador por symlink (--dry-run, --uninstall, --yes, --with-security)
 ```
 
 ## Contribuindo
