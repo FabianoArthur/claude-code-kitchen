@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `docs/toolkit.md` and an "Optional: the toolkit" section in both READMEs: the optional
+  third-party tools the kitchen is run with, grouped (token and context savers RTK, graphify
+  and context7; Claude Code plugins; usage monitors; gates; base tools). The kitchen requires
+  none of them.
 - `menubar/kitchen.30s.py`: a SwiftBar plugin for the macOS menu bar. Unit counts by state,
   one menu item per unit (last screen line, Open PR, Attach, Copy attach command), and
   divergences between manifests and tmux sessions (orphan session, crashed `🔄` row,

@@ -58,6 +58,7 @@ graph. With a plain folder, the links are just text.
 If you keep a code graph (any tool that answers "where does X live / who calls Y" from an
 index), the skills use it first when building a blast radius or a QA recon, and fall back to
 reading files. Set `post_commit` to refresh it after each commit.
+[graphify](toolkit.md#save-tokens-and-context) is one such tool.
 
 ## Shell hooks and output proxies
 

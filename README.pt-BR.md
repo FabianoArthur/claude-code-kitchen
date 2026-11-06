@@ -243,6 +243,26 @@ terminal se metendo no shell não interativo.
 **Funciona no Windows?** Não de forma nativa (por causa do tmux). No WSL2 deve funcionar,
 mas ninguém testou ainda.
 
+## Opcional: o kit de ferramentas
+
+O kitchen só precisa dos requisitos acima. Isto é o que se usa com ele na prática: opcional,
+feito por terceiros (o kitchen não instala nada disso). Detalhes, comandos de instalação e
+links (em inglês): [docs/toolkit.md](docs/toolkit.md).
+
+- **Economizar tokens e contexto** (N cozinhas dividem a cota de um plano, e cada token lido
+  por uma sessão é relido em toda chamada seguinte): [RTK](https://www.rtk-ai.app/), um proxy
+  de CLI que enxuga a saída dos comandos; [graphify](https://github.com/Graphify-Labs/graphify),
+  um grafo de código consultável; [context7](https://github.com/upstash/context7), docs de
+  bibliotecas sob demanda.
+- **Plugins do Claude Code:** superpowers, code-review, code-simplifier, feature-dev,
+  claude-md-management, skill-creator, frontend-design, github, discord, e, de terceiros,
+  claude-council e ui-ux-pro-max.
+- **Acompanhar o uso:** claude-monitor, mais o widget da barra de menu e o Kitchen.app deste
+  repositório.
+- **Gates:** pytest, ruff, shellcheck, gitleaks, markdownlint-cli2, lychee.
+- **Base:** tmux, git worktree, `gh`, uv e `caffeinate`, para o Mac não dormir no meio de uma
+  cozinha.
+
 ## Estrutura do repositório
 
 ```
@@ -253,7 +273,7 @@ menubar/           plugin do SwiftBar: a cozinha na barra de menu do macOS
 macos/             app nativo de barra de menu (SwiftUI, Liquid Glass) com o uso do Claude
 shell/             proteção opcional do zsh para shells que não são de humanos
 examples/          adapter, adapter de QA, doc de tarefa, projeto de demonstração
-docs/              arquitetura, adapter, manifesto, gates, QA, integrações, barra de menu, solução de problemas
+docs/              arquitetura, adapter, manifesto, gates, QA, integrações, toolkit, barra de menu, solução de problemas
 tests/             testes com pytest (rodam também o --selftest de cada script)
 install.sh         instalador por symlink (--dry-run, --uninstall, --yes)
 ```
