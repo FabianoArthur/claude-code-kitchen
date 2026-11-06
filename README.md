@@ -207,6 +207,23 @@ integration hooking the non-interactive shell.
 
 **Does it work on Windows?** Not natively (tmux). WSL2 should work but is untested.
 
+## Optional: the toolkit
+
+The kitchen needs only the requirements above. This is what it is run with in practice,
+optional and made by other people (the kitchen installs none of it). Details, install
+commands and links: [docs/toolkit.md](docs/toolkit.md).
+
+- **Save tokens and context** (N kitchens share one plan's quota, and every token a session
+  reads is re-read on each later call): [RTK](https://www.rtk-ai.app/), a CLI proxy that
+  trims command output; [graphify](https://github.com/Graphify-Labs/graphify), a queryable
+  code graph; [context7](https://github.com/upstash/context7), on-demand library docs.
+- **Claude Code plugins:** superpowers, code-review, code-simplifier, feature-dev,
+  claude-md-management, skill-creator, frontend-design, github, discord, and third-party
+  claude-council and ui-ux-pro-max.
+- **Watch usage:** claude-monitor, plus this repo's own menu-bar widget and Kitchen.app.
+- **Gates:** pytest, ruff, shellcheck, gitleaks, markdownlint-cli2, lychee.
+- **Base:** tmux, git worktree, `gh`, uv, and `caffeinate` so a Mac does not sleep mid-kitchen.
+
 ## Repository layout
 
 ```
@@ -217,7 +234,7 @@ menubar/           SwiftBar plugin: the kitchen in your macOS menu bar
 macos/             native menu-bar app (SwiftUI, Liquid Glass) with Claude usage
 shell/             opt-in zsh guard for non-human shells
 examples/          adapter, QA adapter, task doc, demo project
-docs/              architecture, adapter, manifest, gates, QA, integrations, menubar, troubleshooting
+docs/              architecture, adapter, manifest, gates, QA, integrations, toolkit, menubar, troubleshooting
 tests/             pytest suite (runs every script's --selftest too)
 install.sh         symlink installer (--dry-run, --uninstall, --yes)
 ```
