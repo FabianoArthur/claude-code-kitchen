@@ -73,6 +73,12 @@ post_commit: ""                               # e.g. a code-graph refresh; empty
 status_push: ""                               # e.g. a tracker sync script; empty = nothing
 consumers: ["../my-app-mobile"]               # who consumes this repo's API (downstream check)
 
+tracker:                                      # optional: only for /sync
+  type: clickup
+  list_id: "REPLACE-WITH-YOUR-LIST-ID"        # the list that receives the cards
+  # token_env: CLICKUP_API_TOKEN              # default; or a chmod-600 file:
+  # token_file: ~/.config/claude-code-kitchen/clickup_token
+
 vault:
   cards: docs/tasks                           # task docs
   plans: docs/plans                           # plans + manifests

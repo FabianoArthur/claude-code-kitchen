@@ -84,6 +84,10 @@ Requirements: [Claude Code](https://docs.claude.com/en/docs/claude-code), `git`,
 
 Between sessions: `/save` writes where you are into the task doc (local, no tracker call);
 `/resume` reads it back, with the manifest and git, and tells you the one next step.
+`/sync` is the separate, explicit step that pushes the saved docs to your tracker.
+
+Optional: `./claude-code-kitchen/install.sh --with-security` also links the
+[defensive-security pack](skills/security/README.md) (8 skills, in Portuguese).
 
 Want to try it without touching a real repo first? Follow
 [`examples/demo-project`](examples/demo-project/README.md).
@@ -100,6 +104,8 @@ Want to try it without touching a real repo first? Follow
 | `/harvest` | after merging: clean up what was verifiably merged |
 | `/save [id]` | end of a session: write state, pending and a log entry into the task doc — local only, marks `sync_pending` |
 | `/resume [id]` | start of a session: read the task doc, the manifest and git; say state · done · pending · **one** next step; does not start working |
+| `/sync [id]` | push saved task docs (`sync_pending: true`) to your tracker — dry-run plan first, applied only after your OK; ClickUp is the first adapter, the token never touches the repo |
+| `seguranca-*` (8, optional) | the [security pack](skills/security/README.md): secrets, dependencies, agents, API, infra, web front, LGPD data, bots and webhooks. Installed only with `install.sh --with-security`; written in **Portuguese** (see its README for why) |
 
 ## Concepts
 
@@ -232,7 +238,9 @@ commands and links: [docs/toolkit.md](docs/toolkit.md).
 ## Repository layout
 
 ```
-skills/            the eight skills (orchestrate holds CORE.md, the shared rulebook)
+skills/            the nine skills (orchestrate holds CORE.md, the shared rulebook)
+  sync/scripts/         sync_tracker.py (stdlib only, tested offline)
+  security/             optional pack: 8 `seguranca-*` skills with executable references (pt-BR)
   orchestrate/scripts/  dispatcher.py · doctor.py · gate_diff.py · watch.py
   qa/scripts/           qa_preflight · qa_matrix · qa_budget · qa_report · qa_filter · qa_mutation · qa_watcher
 menubar/           SwiftBar plugin: the kitchen in your macOS menu bar
@@ -241,7 +249,7 @@ shell/             opt-in zsh guard for non-human shells
 examples/          adapter, QA adapter, task doc (before and after /save), demo project
 docs/              architecture, adapter, manifest, gates, QA, integrations, toolkit, menubar, troubleshooting
 tests/             pytest suite (runs every script's --selftest too)
-install.sh         symlink installer (--dry-run, --uninstall, --yes)
+install.sh         symlink installer (--dry-run, --uninstall, --yes, --with-security)
 ```
 
 ## Contributing

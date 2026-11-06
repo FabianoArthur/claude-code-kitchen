@@ -62,7 +62,7 @@ In this order, short:
 4. **One next step** — exactly one, the best one, with the reason. Not a menu.
 5. **Warnings**, only the ones that apply:
    - `sync_pending: true` → there is local work the tracker has not seen; name the adapter's
-     push command (`status_push`) if it has one, and do not run it;
+     push command (`status_push`, or `/sync`) if there is one, and do not run it;
    - a `⏳` manifest row → someone is blocked, and why;
    - uncommitted changes, or a branch behind its base;
    - a merged PR → `/harvest`.

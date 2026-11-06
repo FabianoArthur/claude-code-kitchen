@@ -34,6 +34,8 @@ The QA adapter (`.claude/qa.md`): [`examples/qa.md`](../examples/qa.md).
 | `consumers` | no | repos that consume this repo's public surface (downstream-break check). |
 | `post_commit` | no | hook after each commit (e.g. refresh a code graph). |
 | `status_push` | no | pushes status to a tracker, once per epic at the end of a batch. |
+| `tracker.type`, `tracker.list_id` | for `/sync` | which tracker (`clickup` is the first adapter) and the list that receives the cards. A missing value is asked, never invented. |
+| `tracker.token_env`, `tracker.token_file` | no | where `/sync` reads the token: an environment variable (default `CLICKUP_API_TOKEN`) or a `chmod 600` file (default `~/.config/claude-code-kitchen/clickup_token`). The token is never stored in the repo and never printed. |
 | `vault.cards`, `vault.plans`, `vault.permanent` | no | where task docs, plans/manifests and durable decisions live. `/save` and `/resume` need `vault.cards` (they ask if it is missing); `/resume` also reads manifests from `vault.plans`. |
 
 ## Parsing rules
