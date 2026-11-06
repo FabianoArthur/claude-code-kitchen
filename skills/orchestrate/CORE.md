@@ -1,6 +1,6 @@
 # CORE — the kitchen's rulebook, valid in any project
 
-Read by `orchestrate`, `execute`, `dotask`, `harvest`, `plan` and `qa`. Nothing here is
+Read by `orchestrate`, `execute`, `dotask`, `harvest`, `plan`, `qa`, `save` and `resume`. Nothing here is
 project-specific: every binding (test command, backlog location, layers, hooks) comes from
 the **adapter**.
 

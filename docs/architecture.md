@@ -6,7 +6,7 @@ serve any repo.
 | layer | where | what lives there |
 |---|---|---|
 | **Rules** | `skills/orchestrate/CORE.md` | project-agnostic rules every skill reads: eligibility, routing, gates, blast radius, manifest, abort |
-| **Skills** | `skills/*/SKILL.md` | the procedures: `orchestrate`, `execute`, `dotask`, `harvest`, `plan`, `qa` |
+| **Skills** | `skills/*/SKILL.md` | the procedures: `orchestrate`, `execute`, `dotask`, `harvest`, `plan`, `qa`, `save`, `resume` |
 | **Adapter** | `<repo>/.claude/orchestrator.md` (+ `qa.md`) | every project value: base branch, tests, layers, caps, forbidden patterns, paths |
 
 Rule of thumb: if a value would differ between two repos, it belongs in the adapter. A skill
@@ -95,7 +95,14 @@ only exception is a bug that blocks an acceptance criterion — that is a real s
             │                     │                   │
             │                     └─ manifest row ◄───┘ (🔄 → ✅ / ⏳ / 🚫)
             └─ /plan --problem (detours found along the way)
+
+between sessions:  /save ──► task doc (Current state · Pending · Session log, sync_pending)
+                   /resume ◄── task doc + manifest + git ──► "one next step" (or /harvest)
 ```
+
+`/save` and `/resume` are local-first: the task doc is the memory, a tracker (if any) is
+synced by a separate, explicit step, and `sync_pending: true` in the front matter is the
+only signal between them. See [integrations.md](integrations.md#session-memory-save-and-resume).
 
 See also: [adapter.md](adapter.md) · [manifest.md](manifest.md) · [gates.md](gates.md) ·
 [qa.md](qa.md) · [troubleshooting.md](troubleshooting.md).
