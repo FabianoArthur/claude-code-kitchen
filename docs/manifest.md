@@ -75,6 +75,12 @@ Exit codes: `0` done · `2` crash · `3` waiting on human · `4` manifest missin
 · `6` timeout. It reads the unit's row by **exact** id match, so `task-2` never reads
 `task-21`'s state.
 
+## Reading it between sessions
+
+`/resume` reads the manifests (never writes them) to say what is in flight for the task you
+come back to: the row's state, the `⏳` reason, and whether a `✅` PR has merged — in which
+case it suggests `/harvest`. `/save` never edits a manifest; each kitchen owns its row.
+
 ## Harvest boundary
 
 `/harvest` touches only worktrees listed in some manifest. Anything else is reported and left

@@ -82,6 +82,9 @@ Requirements: [Claude Code](https://docs.claude.com/en/docs/claude-code), `git`,
    is up.
 9. After merging: `/harvest`.
 
+Between sessions: `/save` writes where you are into the task doc (local, no tracker call);
+`/resume` reads it back, with the manifest and git, and tells you the one next step.
+
 Want to try it without touching a real repo first? Follow
 [`examples/demo-project`](examples/demo-project/README.md).
 
@@ -95,6 +98,8 @@ Want to try it without touching a real repo first? Follow
 | `/execute <id>` | the engine of one unit (what a kitchen session runs) |
 | `/qa <target>` | a budgeted QA run: facts → case matrix → gates → verdict with evidence |
 | `/harvest` | after merging: clean up what was verifiably merged |
+| `/save [id]` | end of a session: write state, pending and a log entry into the task doc — local only, marks `sync_pending` |
+| `/resume [id]` | start of a session: read the task doc, the manifest and git; say state · done · pending · **one** next step; does not start working |
 
 ## Concepts
 
@@ -227,13 +232,13 @@ commands and links: [docs/toolkit.md](docs/toolkit.md).
 ## Repository layout
 
 ```
-skills/            the six skills (orchestrate holds CORE.md, the shared rulebook)
+skills/            the eight skills (orchestrate holds CORE.md, the shared rulebook)
   orchestrate/scripts/  dispatcher.py · doctor.py · gate_diff.py · watch.py
   qa/scripts/           qa_preflight · qa_matrix · qa_budget · qa_report · qa_filter · qa_mutation · qa_watcher
 menubar/           SwiftBar plugin: the kitchen in your macOS menu bar
 macos/             native menu-bar app (SwiftUI, Liquid Glass) with Claude usage
 shell/             opt-in zsh guard for non-human shells
-examples/          adapter, QA adapter, task doc, demo project
+examples/          adapter, QA adapter, task doc (before and after /save), demo project
 docs/              architecture, adapter, manifest, gates, QA, integrations, toolkit, menubar, troubleshooting
 tests/             pytest suite (runs every script's --selftest too)
 install.sh         symlink installer (--dry-run, --uninstall, --yes)

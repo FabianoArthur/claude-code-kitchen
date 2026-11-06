@@ -8,6 +8,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `save` and `resume` skills: the session-memory pair that completes the cycle (plan → execute
+  → save/resume → harvest). `/save` writes state, pending items and a prepended session-log
+  entry into the task doc and sets `sync_pending: true`; it never commits, pushes or calls a
+  tracker. `/resume` reads the task doc, its links, the manifest (⏸ 🔄 ⏳ ✅ 🚫) and git (a
+  code graph if present), answers state · done · pending · one next step, warns about
+  unsynced work and suggests `/harvest` for a merged PR, and does not start working. Both are
+  driven by the adapter (`vault.cards`, `vault.plans`, `backlog.*`); a missing field is asked,
+  never invented. `install.sh` picks them up; `examples/task-saved.md` shows a task doc after
+  a save; documented in both READMEs, `docs/integrations.md`, `docs/architecture.md` and
+  `docs/manifest.md`.
 - `docs/toolkit.md` and an "Optional: the toolkit" section in both READMEs: the optional
   third-party tools the kitchen is run with, grouped (token and context savers RTK, graphify
   and context7; Claude Code plugins; usage monitors; gates; base tools). The kitchen requires
