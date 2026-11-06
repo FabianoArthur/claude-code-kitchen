@@ -6,6 +6,7 @@
 #   ./install.sh --uninstall     remove only the symlinks that point into this repo
 #   ./install.sh --target DIR    use DIR instead of ${CLAUDE_SKILLS_DIR:-~/.claude/skills}
 #   ./install.sh --yes           do not ask before backing up a same-named skill
+#   ./install.sh --with-security also link the optional security pack (skills/security/*)
 #
 # Safety rules:
 #   - never deletes anything: an existing skill with the same name (directory, file, or a
@@ -13,13 +14,15 @@
 #     after you confirm (or pass --yes); without a terminal to ask, it changes nothing;
 #   - --uninstall removes only symlinks whose target is this repo, and prints how to
 #     restore any backup it finds — it never restores or deletes backups by itself;
+#   - the security pack is opt-in: a plain install never links skills/security/*, but
+#     --uninstall always removes those links too (only if they point into this repo);
 #   - does not touch your shell rc files; the shell guard is opt-in (see README).
 #
 # Works with bash 3.2+ (the macOS default).
 set -euo pipefail
 
 usage() {
-  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 REPO_DIR=$(cd "$(dirname "$0")" && pwd -P)
@@ -28,12 +31,14 @@ TARGET="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 DRY_RUN=0
 UNINSTALL=0
 ASSUME_YES=0
+WITH_SECURITY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --uninstall) UNINSTALL=1 ;;
     -y|--yes) ASSUME_YES=1 ;;
+    --with-security) WITH_SECURITY=1 ;;
     --target)
       [ $# -ge 2 ] || { echo "error: --target needs a directory" >&2; exit 2; }
       TARGET="$2"
@@ -53,18 +58,33 @@ run() {
   fi
 }
 
-skill_names() {
+# Paths (relative to skills/) of the skills to manage. Core skills are skills/<name>/;
+# the optional security pack lives in skills/security/<name>/ and is included only
+# when $1 = all (install with --with-security, and always on uninstall).
+skill_paths() {
   local dir
   for dir in "$SKILLS_SRC"/*/; do
     [ -f "${dir}SKILL.md" ] && basename "$dir"
   done
+  if [ "${1:-core}" = "all" ]; then
+    for dir in "$SKILLS_SRC"/security/*/; do
+      [ -f "${dir}SKILL.md" ] && echo "security/$(basename "$dir")"
+    done
+  fi
+  return 0
+}
+
+# Which set an install touches.
+install_set() {
+  if [ "$WITH_SECURITY" -eq 1 ]; then echo all; else echo core; fi
 }
 
 # Skills of the user that an install would move aside (same name, not our link).
 conflicts() {
-  local name src dest
-  for name in $(skill_names); do
-    src="$SKILLS_SRC/$name"
+  local rel name src dest
+  for rel in $(skill_paths "$(install_set)"); do
+    name=$(basename "$rel")
+    src="$SKILLS_SRC/$rel"
     dest="$TARGET/$name"
     if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
       continue
@@ -100,12 +120,13 @@ confirm_conflicts() {
 }
 
 install_skills() {
-  local stamp name src dest backup n
+  local stamp rel name src dest backup n
   confirm_conflicts
   stamp=$(date +%Y%m%d%H%M%S)
   run mkdir -p -- "$TARGET"
-  for name in $(skill_names); do
-    src="$SKILLS_SRC/$name"
+  for rel in $(skill_paths "$(install_set)"); do
+    name=$(basename "$rel")
+    src="$SKILLS_SRC/$rel"
     dest="$TARGET/$name"
     if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
       echo "ok       $name (already linked)"
@@ -134,12 +155,16 @@ Next steps:
      paste $REPO_DIR/shell/zshrc-guard.zsh at the top of your ~/.zshrc.
   3. Read the security section of the README before dispatching a kitchen session.
 EOF
+  if [ "$WITH_SECURITY" -eq 0 ]; then
+    echo "  4. Optional: ./install.sh --with-security also links the 8 defensive-security skills."
+  fi
 }
 
 uninstall_skills() {
-  local name src dest found=0
-  for name in $(skill_names); do
-    src="$SKILLS_SRC/$name"
+  local rel name src dest found=0
+  for rel in $(skill_paths all); do
+    name=$(basename "$rel")
+    src="$SKILLS_SRC/$rel"
     dest="$TARGET/$name"
     if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
       echo "remove   $name"
