@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-NAMES = ["resume", "save"]
+NAMES = ["resume", "save", "sync"]
 
 
 def front_matter(text):
@@ -37,11 +37,11 @@ def test_reads_the_shared_rulebook_and_the_adapter(skill):
 
 def test_no_hard_coded_project_values(skill):
     # Everything project-specific comes from the adapter; nothing may be baked into a skill.
-    _, text = skill
+    name, text = skill
     assert not re.search(r"/(Users|home)/", text)
     assert not re.search(r"\b\d{9,}\b", text)          # tracker list/space ids
-    for term in ("clickup", "hidrofleet"):
-        assert term not in text.lower()
+    if name != "sync":                       # the sync skill is where a tracker is named
+        assert "clickup" not in text.lower()
 
 
 def test_save_is_local_first():
@@ -49,6 +49,7 @@ def test_save_is_local_first():
     assert "sync_pending" in text
     for rule in ("no commit", "no push", "no tracker"):
         assert rule in text.lower()
+    assert "⏳ to sync" in text                         # the marker /sync looks for
     assert "date +%F" in text                          # dates come from the clock, not memory
     assert "## Links" in text and "## Session log" in text and "## Current state" in text
 

@@ -47,11 +47,15 @@ Get the date with `date +%F` — never from memory.
 3. **`## Session log`** — **prepend** (newest first) a new entry:
 
    ```markdown
-   ### YYYY-MM-DD — saved by /save
+   ### YYYY-MM-DD — saved by /save ⏳ to sync
    - **Changed:** what was done, with `file:line` where it helps (describe, do not stage).
    - **Decisions:** what was decided and why — the part nobody can rederive from the diff.
    - **Pending:** what is left, in one line (the checklist above has the detail).
    ```
+
+   The `⏳ to sync` marker is what `/sync` looks for: it posts the marked entries to the
+   tracker and flips the marker to `✅ synced <date>`. Without a tracker it is just a
+   harmless label.
 
    Several saves in one day → one entry per save; do not merge them. Never edit older
    entries.
@@ -73,7 +77,7 @@ does not define. Do not describe code structure in prose — that is a code grap
 ## Step 3 — Confirm
 
 Report: the doc's path and `sync_pending: true`. If the adapter has a `status_push`
-command, name it and say the push is a separate step you did not run; if it has none, say
+command (or you use `/sync`), name it and say the push is a separate step you did not run; if it has none, say
 nothing about trackers.
 
 ## This skill does NOT
@@ -81,6 +85,6 @@ nothing about trackers.
 - Commit, stage, push or open a PR — the diff of the repo is not its business. No commit,
   no push.
 - Call a tracker — no tracker call, no MCP, no API. `sync_pending` is the handoff.
-- Clear `sync_pending` — only whoever actually pushes to the tracker does.
+- Clear `sync_pending` — only whoever actually pushes to the tracker does (`/sync`).
 - Edit a manifest — each kitchen owns its own row (CORE §7).
 - Start working on the pending items.

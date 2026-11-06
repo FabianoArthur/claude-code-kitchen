@@ -70,7 +70,7 @@ uncommitted in `src/api/auth/login.ts`.
 
 ## Session log
 
-### 2026-01-16 — saved by /save
+### 2026-01-16 — saved by /save ⏳ to sync
 
 - **Changed:** `src/api/auth/login.ts:58` calls the limiter per account; the 429 path
   returns a JSON body in the existing error shape.
