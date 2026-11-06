@@ -48,6 +48,7 @@ Fields:
 | `model_by_size` | no | map `size: model-alias` — becomes `--model` at dispatch; size absent from the map = account default |
 | `post_commit` | no | hook after each commit (e.g. regenerate a code graph) |
 | `status_push` | no | command that pushes status to an external tracker |
+| `tracker.type`, `.list_id`, `.token_env`, `.token_file` | for `/sync` | which tracker, its list, and where the token is read from (never stored in the repo) |
 | `vault.*` | no | where to write task docs / permanent notes / plans (`vault.cards`, `vault.permanent`, `vault.plans`) |
 
 A fully commented example lives in `examples/adapter.md`.

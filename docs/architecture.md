@@ -98,11 +98,13 @@ only exception is a bug that blocks an acceptance criterion — that is a real s
 
 between sessions:  /save ──► task doc (Current state · Pending · Session log, sync_pending)
                    /resume ◄── task doc + manifest + git ──► "one next step" (or /harvest)
+                   /sync ──► tracker (dry-run, human OK, then clears sync_pending)
 ```
 
 `/save` and `/resume` are local-first: the task doc is the memory, a tracker (if any) is
 synced by a separate, explicit step, and `sync_pending: true` in the front matter is the
-only signal between them. See [integrations.md](integrations.md#session-memory-save-and-resume).
+only signal between them. `/sync` is that separate step. See
+[integrations.md](integrations.md#session-memory-save-and-resume).
 
 See also: [adapter.md](adapter.md) · [manifest.md](manifest.md) · [gates.md](gates.md) ·
 [qa.md](qa.md) · [troubleshooting.md](troubleshooting.md).

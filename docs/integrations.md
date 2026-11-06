@@ -90,3 +90,34 @@ command, or you by hand) clears the flag. Nothing in the kitchen does that for y
 saving stays free and a stale tracker is visible instead of silent. Example of the same doc
 before and after a save: [`examples/task.md`](../examples/task.md) and
 [`examples/task-saved.md`](../examples/task-saved.md).
+
+## Tracker sync: `/sync`
+
+The separate, explicit half of the pair. `/save` leaves `sync_pending: true` and marks the
+new log entry `⏳ to sync`; `/sync` pushes exactly those entries and clears the flag
+(`✅ synced <date>`).
+
+- **Dry-run first.** `/sync` prints the plan (which card is found or created, which comment
+  is posted, which status and priority are set) and changes nothing. The same command runs
+  for real only after you say OK. A card is never created without that OK.
+- **Adapter-driven.** `tracker.type`, `tracker.list_id` and the token location come from the
+  adapter's `tracker:` block ([adapter.md](adapter.md)). ClickUp is the first adapter
+  (`skills/sync/scripts/sync_tracker.py`, standard library only).
+- **The token stays out of the repo.** It is read from an environment variable or from a
+  `chmod 600` file (the script refuses a looser mode), and is redacted from every message
+  and error.
+- **Nothing invented.** No default priority; a status is set only if the tracker's list
+  actually has it (`--no-status` skips it, which is the usual fix when a push fails on a
+  status name).
+- **Tested offline.** `tests/test_sync_tracker.py` mocks the HTTP layer; no test touches the
+  network or a real token.
+
+## Security pack (optional)
+
+`skills/security/` holds eight defensive-security skills — secrets, dependencies, agents,
+API, infra, web front, personal data (LGPD) and bots/webhooks — each with commands that
+prove a finding and an executable reference where one helps (a PreToolUse fence with a test
+battery, a PII scanner, a webhook-signature verifier, gitleaks rules). They are **not**
+installed by default: `./install.sh --with-security`. They are written in Portuguese; see
+[`skills/security/README.md`](../skills/security/README.md). The incident table there is
+anonymized — the lesson stayed, the names did not.

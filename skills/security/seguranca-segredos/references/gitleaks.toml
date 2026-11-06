@@ -1,0 +1,27 @@
+# Config extra do gitleaks para uma stack Node/Python com Discord, ClickUp e MongoDB.
+# Uso: gitleaks git --no-banner --redact -c skills/security/seguranca-segredos/references/gitleaks.toml <repo>
+# (ou copie para <repo>/.gitleaks.toml)
+[extend]
+useDefault = true   # mantém as ~200 regras padrão
+
+# As regras padrão (gitleaks 8.30.1) e o trufflehog 3.97.8 NÃO detectaram URL de webhook
+# do Discord em teste de 2026-09-23. A URL inteira é a credencial.
+[[rules]]
+id = "discord-webhook-url"
+description = "URL de webhook do Discord (a URL inteira é a credencial)"
+regex = '''https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d{17,20}/[\w-]{60,80}'''
+keywords = ["discord.com/api", "discordapp.com/api"]
+
+# Token pessoal do ClickUp (não expira).
+[[rules]]
+id = "clickup-personal-token"
+description = "Token pessoal do ClickUp (pk_)"
+regex = '''\bpk_\d{4,12}_[A-Z0-9]{32}\b'''
+keywords = ["pk_"]
+
+# URI de Mongo com usuário e senha embutidos.
+[[rules]]
+id = "mongodb-uri-com-senha"
+description = "URI do MongoDB com credencial embutida"
+regex = '''mongodb(?:\+srv)?://[^:\s/@]+:[^@\s/]+@[^\s"']+'''
+keywords = ["mongodb://", "mongodb+srv://"]
