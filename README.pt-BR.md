@@ -258,6 +258,27 @@ terminal se metendo no shell não interativo.
 **Funciona no Windows?** Não de forma nativa (por causa do tmux). No WSL2 deve funcionar,
 mas ninguém testou ainda.
 
+## Livro de receitas (cookbook)
+
+Antes de construir algo novo, veja se já existe uma receita pronta. `cookbook/` é um catálogo
+pesquisável de 565 agents, commands, skills, regras, scripts e hooks, indexado por ocasião
+("quando precisamos de um agendador, SEO, um revisor de outra linguagem..."), montado a partir
+do [Everything Claude Code](https://github.com/affaan-m/ECC) (ECC, MIT) e de ideias da análise
+do work-cli. Receita nunca roda como está: cada uma vira uma tarefa que a adapta e prova o resultado.
+
+- **Buscar:** a skill `cookbook` (instalada junto com as outras) roda
+  `graphify query "<tema>" --graph cookbook/graphify-out/graph.json`; funciona também em
+  português ("agendador"). Ou leia [`cookbook/COOKBOOK.md`](cookbook/COOKBOOK.md), agrupado por ocasião.
+- **Despensa:** o catálogo aponta para os repositórios de origem, que não vêm junto. Rode
+  `bash cookbook/fetch_pantry.sh` para baixá-los em `cookbook/pantry/` (fora do git; a cópia do ECC
+  fica presa a um commit e todo `CLAUDE.md` vira `CLAUDE.ref.md`, para nunca ser carregado como
+  instrução). O work-cli é privado: o script pula sem acesso.
+- **Contexto:** [docs/ecc-adoption-plan.md](docs/ecc-adoption-plan.md) (a brigada da cozinha e o
+  plano), [docs/work-cli-adoption-plan.md](docs/work-cli-adoption-plan.md) e
+  [docs/ecc/](docs/ecc/) (o que revisamos no ECC e por quê). Os docs estão em inglês.
+- **Créditos:** [cookbook/CREDITS.md](cookbook/CREDITS.md) (ECC © 2026 Affaan Mustafa, MIT;
+  licença em [cookbook/LICENSE-ECC](cookbook/LICENSE-ECC)).
+
 ## Opcional: o kit de ferramentas
 
 O kitchen só precisa dos requisitos acima. Isto é o que se usa com ele na prática: opcional,
@@ -281,7 +302,8 @@ links (em inglês): [docs/toolkit.md](docs/toolkit.md).
 ## Estrutura do repositório
 
 ```
-skills/            as nove skills (a orchestrate guarda o CORE.md, as regras comuns)
+skills/            as dez skills (a orchestrate guarda o CORE.md, as regras comuns)
+  cookbook/             busca no catálogo de receitas antes de construir do zero
   sync/scripts/         sync_tracker.py (só stdlib, testado offline)
   security/             pacote opcional: 8 skills `seguranca-*` com material executável
   orchestrate/scripts/  dispatcher.py · doctor.py · gate_diff.py · watch.py
@@ -290,6 +312,7 @@ menubar/           plugin do SwiftBar: a cozinha na barra de menu do macOS
 macos/             app nativo de barra de menu (SwiftUI, Liquid Glass) com o uso do Claude
 shell/             proteção opcional do zsh para shells que não são de humanos
 examples/          adapter, adapter de QA, doc de tarefa (antes e depois do /save), projeto de demonstração
+cookbook/          catálogo de receitas (COOKBOOK.md, grafo, índices), CREDITS, fetch_pantry.sh
 docs/              arquitetura, adapter, manifesto, gates, QA, integrações, toolkit, barra de menu, solução de problemas
 tests/             testes com pytest (rodam também o --selftest de cada script)
 install.sh         instalador por symlink (--dry-run, --uninstall, --yes, --with-security)
