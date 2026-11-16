@@ -15,3 +15,5 @@ ignores:
   - ".worktrees/**"
   - ".kitchen/**"
   - "node_modules/**"
+  # generated artifact: GRAPH_REPORT.md is written by graphify (cookbook/build_graph.py), not by hand
+  - "cookbook/graphify-out/**"

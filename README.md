@@ -218,6 +218,28 @@ integration hooking the non-interactive shell.
 
 **Does it work on Windows?** Not natively (tmux). WSL2 should work but is untested.
 
+## Cookbook
+
+Before building something new, check whether a ready-made recipe exists. `cookbook/` is a
+searchable catalog of 565 agents, commands, skills, rules, scripts and hooks, indexed by
+occasion ("when we need a scheduler, SEO, a reviewer for another language..."), built from
+[Everything Claude Code](https://github.com/affaan-m/ECC) (ECC, MIT) with ideas from the
+work-cli analysis. Recipes are never run as they are: each one becomes a task that adapts it
+and proves the result.
+
+- **Search:** the `cookbook` skill (installed with the others) runs
+  `graphify query "<topic>" --graph cookbook/graphify-out/graph.json`; the same works in
+  Portuguese ("agendador"). Or read [`cookbook/COOKBOOK.md`](cookbook/COOKBOOK.md), grouped by occasion.
+- **Pantry:** the catalog points into the source repos, which are not vendored. Run
+  `bash cookbook/fetch_pantry.sh` to download them into `cookbook/pantry/` (git-ignored; the ECC
+  copy is pinned to a commit, and every `CLAUDE.md` is renamed `CLAUDE.ref.md` so it never
+  loads as instructions). work-cli is private: the script skips it without access.
+- **Background:** [docs/ecc-adoption-plan.md](docs/ecc-adoption-plan.md) (the kitchen brigade and
+  the plan), [docs/work-cli-adoption-plan.md](docs/work-cli-adoption-plan.md) and
+  [docs/ecc/](docs/ecc/) (what we reviewed in ECC and why).
+- **Credits:** [cookbook/CREDITS.md](cookbook/CREDITS.md) (ECC © 2026 Affaan Mustafa, MIT;
+  license in [cookbook/LICENSE-ECC](cookbook/LICENSE-ECC)).
+
 ## Optional: the toolkit
 
 The kitchen needs only the requirements above. This is what it is run with in practice,
@@ -238,7 +260,8 @@ commands and links: [docs/toolkit.md](docs/toolkit.md).
 ## Repository layout
 
 ```
-skills/            the nine skills (orchestrate holds CORE.md, the shared rulebook)
+skills/            the ten skills (orchestrate holds CORE.md, the shared rulebook)
+  cookbook/             searches the recipe catalog before building from scratch
   sync/scripts/         sync_tracker.py (stdlib only, tested offline)
   security/             optional pack: 8 `seguranca-*` skills with executable references (pt-BR)
   orchestrate/scripts/  dispatcher.py · doctor.py · gate_diff.py · watch.py
@@ -247,6 +270,7 @@ menubar/           SwiftBar plugin: the kitchen in your macOS menu bar
 macos/             native menu-bar app (SwiftUI, Liquid Glass) with Claude usage
 shell/             opt-in zsh guard for non-human shells
 examples/          adapter, QA adapter, task doc (before and after /save), demo project
+cookbook/          recipe catalog (COOKBOOK.md, graph, indexes), CREDITS, fetch_pantry.sh
 docs/              architecture, adapter, manifest, gates, QA, integrations, toolkit, menubar, troubleshooting
 tests/             pytest suite (runs every script's --selftest too)
 install.sh         symlink installer (--dry-run, --uninstall, --yes, --with-security)

@@ -22,8 +22,8 @@ def target(tmp_path):
     return tmp_path / "skills"
 
 
-def test_ships_the_nine_skills():
-    assert SKILLS == ["dotask", "execute", "harvest", "orchestrate", "plan", "qa", "resume", "save", "sync"]
+def test_ships_the_ten_skills():
+    assert SKILLS == ["cookbook", "dotask", "execute", "harvest", "orchestrate", "plan", "qa", "resume", "save", "sync"]
 
 
 def test_fresh_install_links_every_skill(target):

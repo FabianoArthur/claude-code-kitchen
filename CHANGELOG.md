@@ -8,6 +8,17 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Cookbook: `cookbook/` is a searchable catalog of 565 ready-made recipes (agents, commands,
+  skills, rules, scripts, hooks) indexed by occasion, with a queryable graph
+  (`graphify-out/`, English and pt-BR search terms) and the scripts that rebuild it
+  (`index_ecc.py`, `build_cookbook.py`, `build_graph.py`). The new `cookbook` skill searches it
+  before anything is built from scratch. The source repos are not vendored:
+  `cookbook/fetch_pantry.sh` downloads them into the git-ignored `cookbook/pantry/` (ECC
+  pinned to a commit, every `CLAUDE.md` renamed `CLAUDE.ref.md`; the private work-cli is
+  skipped without access). Credits and the ECC MIT license: `cookbook/CREDITS.md`,
+  `cookbook/LICENSE-ECC`. Background in `docs/ecc-adoption-plan.md`,
+  `docs/work-cli-adoption-plan.md` and `docs/ecc/`. Documented in both READMEs.
+
 - `save` and `resume` skills: the session-memory pair that completes the cycle (plan → execute
   → save/resume → harvest). `/save` writes state, pending items and a prepended session-log
   entry into the task doc and sets `sync_pending: true`; it never commits, pushes or calls a
