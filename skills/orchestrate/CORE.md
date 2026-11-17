@@ -134,31 +134,79 @@ they are consultations that return an answer, not units of work.)
 
 Worktree and branch are created **before** dispatch, with the canonical command of
 `execute` Step 2 (`git worktree add <worktrees>/<ID> -b <branch> <base>` +
-`prepare_worktree` from the adapter). Then:
+`prepare_worktree` from the adapter). Then the waiter runs these steps **in this order**, at
+dispatch and again at every resume (a unit is never started from what is already sitting in
+its worktree: the unit can edit `.kitchen/`, so the waiter rebuilds all of it from its own
+sources every time):
+
+1. **Prompt.** Write `.kitchen/prompt.md` as a short header built by the waiter (id, route,
+   EXACT branch, adapter path, path of this CORE, ABSOLUTE path of the batch manifest,
+   preliminary blast radius, and the instruction to follow `execute` through the kitchen
+   entry point, its Step 1) followed by the body from
+   `python3 <skills>/orchestrate/scripts/lean_prompt.py <task doc>`. The script keeps the
+   request and the latest review round, cuts the history, appends the `## Outcome` of each
+   `depends_on` unit and sanitizes the text (`sanitize_text.py`): never paste the raw doc.
+2. **Snapshot.** Record what the unit may do, outside the worktree:
+   `python3 <skills>/orchestrate/scripts/unit_snapshot.py write <task doc> --unit <ID> --worktree <worktree> --manifest <manifest> --branch <branch>`.
+   Permissions (`allow_config`, `proof`, `mcp`, `model_exec`…) are read from the doc **once,
+   here**; guard, prover and publisher read the snapshot, never the doc.
+3. **MCP.** With no `mcp:` in the snapshot nothing is written and the session keeps the bare
+   `--strict-mcp-config` (no server). With `mcp:`,
+   `python3 <skills>/orchestrate/scripts/mcp_config.py write --unit <ID>` writes
+   `.kitchen/mcp.json` (mode 0600, only the requested servers from `~/.claude/kitchen-mcp.json`)
+   and prints the tool list for `--allowedTools`. Exit 2 (unknown, denied or
+   secret-carrying server) = do not dispatch; tell the human.
+4. **Launch script.** Write `.kitchen/launch.sh` with the canonical command below (for a
+   single unit too: it is what the dispatcher runs).
+5. **Snapshot again, with the hashes.** Repeat step 2 adding
+   `--launch .kitchen/launch.sh --prompt .kitchen/prompt.md`, so the snapshot carries the
+   sha256 of exactly what will run.
+
+**Escalation.** If the unit already has a snapshot and the rewrite widens its authority
+(`allow_config` false → true, a new `mcp` server, `proof`/`double_proof` true → false, or a
+new `model_exec`, `worktree`, `task_doc`, `manifest` or `branch`), `unit_snapshot.py write`
+exits 3, prints the difference on stderr and writes nothing. **Stop and show that difference
+to the human.** Only after an explicit yes, repeat the same command with
+`--approve-escalation`. Never add the flag on your own initiative and never to get past a
+non-zero exit you have not read. Reductions and changed hashes pass without the flag.
+
+Then check the session name and start it:
 
 ```bash
-mkdir -p <worktree>/.kitchen
-# write .kitchen/prompt.md: id, route, EXACT branch, adapter path, path of this CORE,
-# ABSOLUTE path of the batch manifest, preliminary blast radius, and the instruction to
-# follow `execute` through the kitchen entry point (its Step 1)
 tmux has-session -t '=kitchen-<ID>' 2>/dev/null   # already exists? STOP and reconcile — do not kill
 tmux new-session -d -s kitchen-<ID> -c <worktree> \
-  'env -u CLAUDECODE -u GHOSTTY_RESOURCES_DIR -u GHOSTTY_BIN_DIR -u GHOSTTY_SHELL_FEATURES -u GHOST_COMPLETE_ACTIVE -u TERM_PROGRAM KITCHEN_SESSION=1 <claude> "$(cat .kitchen/prompt.md)" --dangerously-skip-permissions --strict-mcp-config'
+  "/usr/bin/env -i PATH='$PATH' HOME='$HOME' USER='$USER' LOGNAME='$LOGNAME' SHELL='$SHELL' TERM='$TERM' LANG='$LANG' TMPDIR='$TMPDIR' KITCHEN_SESSION=1 KITCHEN_UNIT=<ID> <claude> \"\$(cat .kitchen/prompt.md)\" --dangerously-skip-permissions --strict-mcp-config"
+# with `mcp:` add: --mcp-config .kitchen/mcp.json --allowedTools '<tools printed by mcp_config.py>'
 ```
 
-- **`env -u … KITCHEN_SESSION=1` is mandatory.** A tmux pane inherits the tmux server's
-  *global* environment, not your shell's. If your terminal exports integration variables
-  (the list above is Ghostty's; adjust for yours), an interactive-shell hook can `exec` a
-  PTY proxy and the kitchen's first shell command hangs forever while the screen says
-  `esc to interrupt`. `KITCHEN_SESSION=1` also triggers `shell/zshrc-guard.zsh`, a second
-  layer in case a variable comes back another way. Details: `docs/troubleshooting.md`.
+The `$VAR` values are expanded by the waiter when it writes the command, so they are literal
+in the file (add each `LC_*` variable you have set, the same way); `$(cat …)` is expanded
+inside the session, in the worktree.
+
+- **`/usr/bin/env -i … KITCHEN_SESSION=1 KITCHEN_UNIT=<ID>` is mandatory, and it goes
+  *inside* the session command.** A tmux pane inherits the tmux server's *global*
+  environment, not your shell's, so cleaning the environment outside the command does not
+  help; and the server's environment may hold terminal integration variables (Ghostty's
+  and others) that make an interactive-shell hook `exec` a PTY proxy, so the kitchen's
+  first shell command hangs forever while the screen says `esc to interrupt`. Starting
+  from an empty environment fixes both and keeps secrets exported in your shell away from
+  an unattended session. Allowed list: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`,
+  `LANG`, `LC_*`, `TMPDIR` and `KITCHEN_*`. Nothing else is passed: in particular no API
+  key (the `claude` login comes from the Keychain on macOS, `~/.claude/.credentials.json`
+  on Linux) and no `${VAR}` of an MCP server. `env` is called by **absolute path** because
+  `PATH` folders are writable by the unit: a fake `env` there would receive the whole
+  environment. Be honest about the limit: `HOME`, `PATH` and `USER` stay, so a `gh` or git
+  credential helper the unit calls still finds the user's login; `env -i` removes secrets
+  from variables, not the login. `KITCHEN_SESSION=1` also triggers `shell/zshrc-guard.zsh`,
+  a second layer in case a variable comes back another way, and `KITCHEN_UNIT=<ID>` tells
+  the guard and the helper scripts which snapshot applies. Details: `docs/troubleshooting.md`.
 - **Every `-t` uses exact match**, quotes mandatory (zsh expands `=word` without them).
   Without `=`, tmux matches by **prefix**: `kitchen-FE-2` sees and kills `kitchen-FE-21`.
   Form per command: `has-session`/`kill-session`/`attach` use `'=kitchen-<ID>'`; PANE
   commands (`capture-pane`, `send-keys`, `list-panes`) use **`'=kitchen-<ID>:'`** — with
   a trailing colon; without it capture returns empty, silently.
-- **The prompt goes in a file** (`.kitchen/prompt.md`), never inline in the command —
-  shell quoting breaks long prompts silently.
+- **The prompt goes in a file** (`.kitchen/prompt.md`, built by `lean_prompt.py`, already
+  sanitized), never inline in the command — shell quoting breaks long prompts silently.
 - **`<claude>` is the absolute path** of the binary (resolve with `command -v claude` at
   dispatch time): tmux's `sh -c` may not load your shell's PATH.
 - **`--dangerously-skip-permissions` is deliberate:** a detached session has nobody to
@@ -169,8 +217,10 @@ tmux new-session -d -s kitchen-<ID> -c <worktree> \
   using this.
 - **`--strict-mcp-config` is the default — a kitchen session is born with NO MCP server.**
   Each MCP costs a process, context for tool definitions and boot time, **per session**,
-  and a code unit uses none. Declared exception: a unit that provably needs one gets only
-  that one via `--mcp-config '<json of that server>'`.
+  and a code unit uses none. Declared exception: a unit whose doc lists `mcp:` (inline or
+  block list of `mcp__<server>__<tool>` names) gets only those, through step 3 above
+  (`mcp_config.py`: servers come from the registry `~/.claude/kitchen-mcp.json`, chat and
+  e-mail servers are always refused). A unit without `mcp:` changes nothing.
 - **`--model` by size:** if the adapter has `model_by_size` and the unit's size is in the
   map (e.g. `XS/S: sonnet`), add `--model <alias>`. The resource saved is the account's
   rate limit, shared by N concurrent sessions. **Precedence:** a `model_exec` field in the
@@ -189,15 +239,24 @@ tmux new-session -d -s kitchen-<ID> -c <worktree> \
 - Lifetime: survives closing the terminal and `/clear` in the waiter; **dies on reboot**.
   That is why the manifest is mandatory (§7).
 
-**Batch with a cap (`max_parallel` in the adapter):** do not fire everything — write a
-`.kitchen/launch.sh` in each worktree with the canonical command above, plus the queue
-`<worktrees>/.kitchen-queue.tsv` (`id<TAB>worktree`, dispatch order), and start only the
-deterministic dispatcher (zero tokens, self-tested with `--selftest`):
+**Batch with a cap (`max_parallel` in the adapter):** do not fire everything. First run
+`python3 <skills>/orchestrate/scripts/check_tasks.py <folder of task docs>` (zero tokens):
+exit 1 (a `depends_on` that matches no task, or a cycle) = **do not dispatch**, report
+the named ids to the human. A file-collision warning (exit 0) goes to the human before the
+queue is built. Then, for each unit, run steps 1–5 above (the `.kitchen/launch.sh` holds the
+canonical command), write the queue `<worktrees>/.kitchen-queue.tsv` (`id<TAB>worktree`,
+dispatch order), and start only the deterministic dispatcher (zero tokens, self-tested with
+`--selftest`):
 
 ```bash
 tmux new-session -d -s kitchen-dispatcher \
-  'python3 <skills>/orchestrate/scripts/dispatcher.py <worktrees>/.kitchen-queue.tsv --max <N>'
+  'python3 <skills>/orchestrate/scripts/dispatcher.py <worktrees>/.kitchen-queue.tsv --max <N> --limit-file <worktrees>/.kitchen-limit'
 ```
+
+`--max` is the ceiling (the adapter's `max_parallel`); the file named by `--limit-file` holds
+the live limit, re-read on every pass, so you can slow the kitchen down without a restart:
+`python3 <skills>/orchestrate/scripts/dispatcher.py limit get|set N|reset` (same
+`--queue`/`--limit-file` as the dispatcher). A missing or out-of-range file means `--max`.
 
 It keeps ≤N sessions alive, starts the next when a slot frees, reaps hibernated sessions
 (below) and exits by itself when the queue is empty. A unit paused `⏳ waiting on human`
@@ -207,11 +266,13 @@ holds its slot **on purpose** — it is real RAM/CPU; reviewing frees it.
 with `claude --resume <session-id>`. A session that finished its work does not need to
 live: when closing the unit (PR open), the agent writes its own session id to its manifest
 row and to `.kitchen/done` (`execute` Step 12). **`.kitchen/done` present = the session may
-be killed**, even before merge — the dispatcher, the waiter and `harvest` do that. To resume:
+be killed**, even before merge — the dispatcher, the waiter and `harvest` do that. To resume, repeat steps 1–5 (regenerate prompt, launch script and MCP config from the
+waiter's sources, rewrite the snapshot with the escalation rule) and then:
 
 ```bash
 tmux new-session -d -s kitchen-<ID> -c <worktree> \
-  'env -u CLAUDECODE -u GHOSTTY_RESOURCES_DIR -u GHOSTTY_BIN_DIR -u GHOSTTY_SHELL_FEATURES -u GHOST_COMPLETE_ACTIVE -u TERM_PROGRAM KITCHEN_SESSION=1 <claude> --resume <session-id> --dangerously-skip-permissions --strict-mcp-config'
+  "/usr/bin/env -i PATH='$PATH' HOME='$HOME' USER='$USER' LOGNAME='$LOGNAME' SHELL='$SHELL' TERM='$TERM' LANG='$LANG' TMPDIR='$TMPDIR' KITCHEN_SESSION=1 KITCHEN_UNIT=<ID> <claude> --resume <session-id> --dangerously-skip-permissions --strict-mcp-config"
+# with `mcp:` add: --mcp-config .kitchen/mcp.json --allowedTools '<tools printed by mcp_config.py>'
 ```
 
 ## 3. The three gates
