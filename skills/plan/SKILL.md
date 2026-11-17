@@ -38,6 +38,35 @@ skill only PLANS and WRITES.
 - Two tasks crossing the same files → note the collision in both tasks' Technical notes
   (`/orchestrate` uses it to keep them out of the same batch).
 
+## Step 2b — Chef checklist (every task, before the Step 3 table)
+
+Run it on each task; a task that fails an item is rewritten or split, not shown as is.
+
+- [ ] **Decidable criterion**: each criterion is a command plus an expected result (test
+      passes, `grep` finds it, exit 0, count = N). "Looks good" is not one. **At most 6
+      criteria** per task.
+- [ ] **Out of scope** is written down: files and layers not to touch, no push, no secrets.
+- [ ] **Attempt ceiling**: at most 3 attempts on the same error, then `status: review` with
+      the blocker recorded (cheaper model → stronger model → back to the human).
+- [ ] **Model** follows the difficulty table below; a deviation is justified in the notes.
+- [ ] `proof: yes` when the task ships behaviour (run it for real and attach the evidence);
+      `double_proof: yes` only when a wrong result is costly (a second independent run).
+- [ ] `allow_config: no` unless the task is meant to edit agent or tool configuration.
+- [ ] **Inspection**: a task that touches security, data or publishing gets an independent
+      inspector pass (`model_review` set accordingly).
+- [ ] `mcp:` stays empty; list only the exact tools the task needs, never a whole server
+      wildcard without a written reason.
+
+**Signs the task is still too big** (split it, link the parts with `depends_on`): more than
+6 criteria; an "and also…" in the scope; it spans more than one layer or app; it asks for a
+new decision together with the implementation. A decision or spec becomes its own short
+task; the implementation follows in small parts. Tasks that run in parallel never write the
+same file.
+
+**Before the queue:** with several tasks written, run
+`python3 skills/orchestrate/scripts/check_tasks.py <vault.cards>`; a missing dependency or
+a cycle (exit 1) blocks the queue.
+
 ## Step 3 — Confirm BEFORE writing
 
 Show the table (title · size · priority · repo · depends_on · one-line scope) and **STOP —
@@ -59,6 +88,10 @@ size: <XS|S|M|L|XL>
 difficulty: <low|medium|high>
 model_exec: <alias for --model at dispatch — guide below>
 model_review: <alias for the independent pre-PR reviewer — guide below>
+proof: <yes|no — the task ships behaviour that must be run for real>
+double_proof: <yes|no — a second, independent proof run>
+allow_config: <yes|no — may edit agent/tool configuration; default no>
+mcp: <[] by default; only the minimum tool names>
 repos: <repo(s), comma separated>
 branch:
 depends_on:

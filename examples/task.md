@@ -7,6 +7,10 @@ size: M
 difficulty: medium
 model_exec: sonnet
 model_review: opus
+proof: yes
+double_proof: no
+allow_config: no
+mcp: []
 repos: my-app
 branch:
 depends_on:
@@ -37,7 +41,8 @@ at all.
       (verify: `npm test -- login.rate-limit`).
 - [ ] A successful login resets the counter (same test file).
 - [ ] The limit is per account, not per IP: two accounts from one IP are independent.
-- [ ] No change to the response shape of a successful login (the mobile client depends on it).
+- [ ] No change to the response shape of a successful login (the mobile client depends on it;
+      verify: `git diff --stat origin/main -- src/api/auth/` lists only `login.ts` and its test).
 
 ## Technical notes
 
