@@ -96,7 +96,7 @@ def sanitize(text):
     for i, ch in enumerate(text):
         if inside_comment[i]:
             continue
-        if ch == "️":
+        if ch == "\ufe0f":
             if i > 0 and _accepts_fe0f(text[i - 1]):
                 out.append(ch)
             else:
