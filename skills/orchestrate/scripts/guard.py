@@ -141,12 +141,17 @@ def write_log(env, mode: str, tool: str, rule: str, decision: str, detail: str =
         pass
 
 
-def evaluate(event: dict, config: dict):
-    """Returns (rule_name, irreversible, reason) of the first matching rule, or None."""
+def evaluate(event: dict, config: dict, env=None):
+    """Returns (rule_name, irreversible, reason) of the first matching rule, or None.
+
+    Rules also see the process context under the reserved config keys `_env` (the environment
+    mapping) and `_cwd` (the `cwd` of the hook event); a user config cannot set them.
+    """
     tool = event.get("tool_name")
     tool_input = event.get("tool_input")
     if not isinstance(tool, str) or not isinstance(tool_input, dict):
         raise ValueError("event has no tool_name/tool_input")
+    config = {**config, "_env": dict(os.environ if env is None else env), "_cwd": event.get("cwd")}
     for rule in guard_rules.RULES:
         if tool in rule.tools:
             reason = rule.check(tool, tool_input, config)
@@ -174,7 +179,7 @@ def main(env=None, stdin=None, stderr=None) -> int:
             print(f"guard: bad-input: unreadable event ({exc}); blocked (fail-closed)", file=stderr)
             return 2
         tool = str(event.get("tool_name", ""))
-        hit = evaluate(event, config)
+        hit = evaluate(event, config, env)
         if hit is None:
             write_log(env, mode, tool, "", "allow", summarize(tool, event["tool_input"]))
             return 0
