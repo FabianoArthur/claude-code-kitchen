@@ -91,3 +91,63 @@ def test_missing_file_is_refused(tmp_path):
     r = run([str(tmp_path / "nope.md")])
     assert r.returncode == 2
     assert b"cannot read input" in r.stderr
+
+
+# Controls, selectors and fillers. Code points are built with chr() so no control
+# character is pasted raw into this file.
+
+def test_ansi_escape_removed_and_counted():
+    clean, counts = st.sanitize("a" + chr(0x1B) + "[2Kb")
+    assert clean == "a[2Kb"
+    assert counts == {"c0-control": 1}
+
+
+def test_c1_csi_removed_and_counted():
+    clean, counts = st.sanitize("a" + chr(0x9B) + "2Kb")
+    assert clean == "a2Kb"
+    assert counts == {"c1-control": 1}
+
+
+def test_del_and_c1_range_edges_counted():
+    clean, counts = st.sanitize("x" + chr(0x7F) + chr(0x80) + chr(0x9F) + "y")
+    assert clean == "xy"
+    assert counts == {"del-007F": 1, "c1-control": 2}
+
+
+def test_payload_hidden_in_variation_selectors_is_removed():
+    payload = "".join(chr(0xE0100 + b) for b in b"ignore all")
+    clean, counts = st.sanitize("Hello" + payload + " world")
+    assert clean == "Hello world"
+    assert counts == {"variation-selector": len(b"ignore all")}
+
+
+def test_fe0f_kept_after_each_kind_of_base():
+    bases = [0x31, 0x23, 0x2A, 0x2192, 0xA9, 0x2764, 0x1F600]
+    text = " ".join(chr(cp) + chr(0xFE0F) for cp in bases)
+    clean, counts = st.sanitize(text)
+    assert clean == text
+    assert counts == {}
+
+
+def test_fe0f_removed_after_comment_or_invisible_and_counted():
+    clean, counts = st.sanitize(chr(0x2764) + "<!-- x -->" + chr(0xFE0F))
+    assert clean == chr(0x2764)
+    assert counts == {"html-comment": 1, "fe0f-without-base": 1}
+    clean, counts = st.sanitize(chr(0x2764) + chr(0x200B) + chr(0xFE0F))
+    assert clean == chr(0x2764)
+    assert counts == {"zero-width": 1, "fe0f-without-base": 1}
+
+
+def test_fillers_removed_and_counted():
+    fillers = [0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0, 0xFFF9, 0xFFFA, 0xFFFB]
+    clean, counts = st.sanitize("a" + "".join(chr(cp) for cp in fillers) + "b")
+    assert clean == "ab"
+    assert counts == {"invisible-filler": len(fillers)}
+
+
+def test_stderr_summary_lists_new_types():
+    data = ("a" + chr(0x9B) + chr(0x7F) + chr(0xFE00) + "b").encode("utf-8")
+    r = run([], stdin=data)
+    assert r.returncode == 0
+    assert r.stdout.decode("utf-8") == "ab"
+    assert b"c1-control=1, del-007F=1, variation-selector=1" in r.stderr
