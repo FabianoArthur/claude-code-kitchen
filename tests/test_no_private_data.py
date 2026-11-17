@@ -3,8 +3,16 @@
 Generic patterns are checked here, in the open. Project- or company-specific terms are
 NOT listed in this repo (that would publish them): put them, one per line, in a local,
 git-ignored `.private-denylist` and this test checks them too.
+
+Two optional variables let the same check vet another tree before it is published:
+- KITCHEN_CHECK_ROOT: scan this git tree instead of this clone (the denylist stays this clone's);
+- KITCHEN_CHECK_EXTRA: extra files to scan (for example a PR title and body), separated by os.pathsep.
+The scanned tree is only read as data: symlinks are checked by their link text and never followed,
+and only regular files are opened.
 """
+import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -12,6 +20,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 DENYLIST = ROOT / ".private-denylist"
+SCAN_ROOT = Path(os.environ.get("KITCHEN_CHECK_ROOT") or ROOT)
+EXTRA = [p for p in os.environ.get("KITCHEN_CHECK_EXTRA", "").split(os.pathsep) if p]
 
 ALLOWED_EMAILS = re.compile(
     r"(noreply@anthropic\.com|@users\.noreply\.github\.com|@([a-z0-9-]+\.)*example\.(com|org|net)$)", re.I)
@@ -25,17 +35,42 @@ TOKENS = re.compile(
 LONG_ID = re.compile(r"(?<![0-9a-fA-F])\d{11,}(?![0-9a-fA-F])")
 
 
-def tracked_files():
-    out = subprocess.run(["git", "ls-files", "-co", "--exclude-standard"], cwd=ROOT,
-                         capture_output=True, text=True, check=True).stdout.split()
-    for name in out:
-        path = ROOT / name
-        if name == ".private-denylist" or not path.is_file():
-            continue
+def read_data(path):
+    """Text of a file without following links: link text for a symlink, content for a regular file.
+
+    Returns None for anything else (FIFO, socket, device, missing, not UTF-8).
+    """
+    try:
+        mode = os.lstat(path).st_mode
+        if stat.S_ISLNK(mode):
+            return os.readlink(path)
+        if not stat.S_ISREG(mode):
+            return None
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            return None
         try:
-            yield name, path.read_text(encoding="utf-8")
+            return fh.read().decode("utf-8")
         except UnicodeDecodeError:
+            return None
+
+
+def tracked_files():
+    out = subprocess.run(["git", "-c", "core.fsmonitor=false", "ls-files", "-z", "-co", "--exclude-standard"],
+                         cwd=SCAN_ROOT, capture_output=True, text=True, check=True).stdout.split("\0")
+    for name in filter(None, out):
+        if name == ".private-denylist" and SCAN_ROOT == ROOT:
             continue
+        text = read_data(SCAN_ROOT / name)
+        if text is not None:
+            yield name, text
+    for n, extra in enumerate(EXTRA, 1):
+        text = read_data(extra)
+        if text is not None:
+            yield f"<extra file #{n}>", text
 
 
 def hits(pattern, allow=None):
