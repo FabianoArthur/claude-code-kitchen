@@ -54,6 +54,9 @@ def scenario(mod, tmp_path):
 
     rows = mod.load_rows(cfg, NOW)
     model = mod.build_model(cfg, rows, mod.list_sessions(cfg, run=run), NOW)
+    for e in model["entries"]:
+        e["tokens"] = {"rate-limit": 48210, "export-csv": 1830}.get(e["unit"])
+    model["tokens_today"] = 1250000
     panes = {"kitchen-rate-limit": "Running tests: 214 passed, 3 to go",
              "kitchen-export-csv": "Which CSV dialect should the export use?"}
     data = mod.to_json(model, cfg, NOW, warning="config error: ignored invalid value for stale_days",
@@ -113,6 +116,17 @@ def test_every_nullable_field_has_a_value_somewhere(tmp_path):
         for key, types in s[section].items():
             assert types != ["null"], f"{section}.{key} is only ever null in the scenario"
     assert s["top"]["warning"] == ["str"]
+
+
+def test_token_fields_are_optional_numbers(tmp_path):
+    mod = load(PLUGIN)
+    data = scenario(mod, tmp_path)
+    s = shape(data)
+    assert data["schema"] == 1
+    assert s["top"]["tokens_today"] == ["number"]
+    assert s["units"]["tokens"] == ["null", "number"]   # a number for some units, null for the rest
+    err = shape(error_scenario(mod))
+    assert err["top"]["tokens_today"] == ["null"]        # no transcript data: null, not an error
 
 
 def test_error_fixture_matches_the_script():

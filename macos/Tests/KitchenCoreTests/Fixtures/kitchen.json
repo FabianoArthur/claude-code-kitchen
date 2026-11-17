@@ -15,6 +15,7 @@
     "harvested": 0,
     "unknown": 0
   },
+  "tokens_today": 1250000,
   "units": [
     {
       "unit": "rate-limit",
@@ -33,7 +34,8 @@
       "age_text": "12m",
       "recent": true,
       "pane": "Running tests: 214 passed, 3 to go",
-      "attach_command": "tmux attach -t '=kitchen-rate-limit'"
+      "attach_command": "tmux attach -t '=kitchen-rate-limit'",
+      "tokens": 48210
     },
     {
       "unit": "export-csv",
@@ -52,7 +54,8 @@
       "age_text": "1h12",
       "recent": true,
       "pane": "Which CSV dialect should the export use?",
-      "attach_command": "tmux attach -t '=kitchen-export-csv'"
+      "attach_command": "tmux attach -t '=kitchen-export-csv'",
+      "tokens": 1830
     },
     {
       "unit": "search-api",
@@ -71,7 +74,8 @@
       "age_text": null,
       "recent": true,
       "pane": "",
-      "attach_command": null
+      "attach_command": null,
+      "tokens": null
     },
     {
       "unit": "login-fix",
@@ -90,7 +94,8 @@
       "age_text": null,
       "recent": true,
       "pane": "",
-      "attach_command": null
+      "attach_command": null,
+      "tokens": null
     },
     {
       "unit": "old-idea",
@@ -109,7 +114,8 @@
       "age_text": null,
       "recent": true,
       "pane": "",
-      "attach_command": null
+      "attach_command": null,
+      "tokens": null
     },
     {
       "unit": "new-ui",
@@ -128,7 +134,8 @@
       "age_text": null,
       "recent": true,
       "pane": "",
-      "attach_command": null
+      "attach_command": null,
+      "tokens": null
     }
   ],
   "divergences": [

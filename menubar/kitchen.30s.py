@@ -2,7 +2,7 @@
 # <swiftbar.title>Kitchen</swiftbar.title>
 # <swiftbar.version>v0.1.0</swiftbar.version>
 # <swiftbar.author>claude-code-kitchen contributors</swiftbar.author>
-# <swiftbar.desc>Unit counts by state, one item per unit, and manifest-vs-tmux divergences.</swiftbar.desc>
+# <swiftbar.desc>Unit counts by state, one item per unit, tokens, and manifest-vs-tmux divergences.</swiftbar.desc>
 # <swiftbar.dependencies>python3,tmux</swiftbar.dependencies>
 # <swiftbar.hideAbout>true</swiftbar.hideAbout>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
@@ -10,7 +10,7 @@
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 # <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
 """
-kitchen — macOS menu-bar widget (SwiftBar plugin) for claude-code-kitchen. Zero tokens.
+kitchen — macOS menu-bar widget (SwiftBar plugin) for claude-code-kitchen. Spends no model tokens.
 
 Reads the batch manifests (docs/manifest.md) and the tmux sessions, and shows:
 
@@ -42,6 +42,7 @@ Structured output (read by the native macOS app in macos/, see docs/macos-app.md
 from __future__ import annotations
 
 import glob
+import importlib.util
 import os
 import re
 import shutil
@@ -455,6 +456,90 @@ def build_model(cfg, rows, tmux, now, done_exists=os.path.isfile):
             "globs": len(cfg["manifests"])}
 
 
+# ------------------------------------------------------------------ tokens (optional)
+
+UUID_NAME = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\.jsonl$")
+
+
+def _tokens_module():
+    """transcript_tokens.py, loaded by path; None when it cannot be found.
+
+    SwiftBar runs a copy of this file, so the helper is looked up in the folder named by
+    KITCHEN_SCRIPTS_DIR, in the installed skill and next to the real file of this script.
+    """
+    here = os.path.dirname(os.path.realpath(__file__))
+    folders = [os.environ.get("KITCHEN_SCRIPTS_DIR") or "",
+               os.path.expanduser("~/.claude/skills/orchestrate/scripts"),
+               os.path.join(here, "..", "skills", "orchestrate", "scripts")]
+    for folder in folders:
+        path = os.path.join(folder, "transcript_tokens.py") if folder else ""
+        if not os.path.isfile(path):
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location("transcript_tokens", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        except Exception:  # a broken helper must not break the menu
+            return None
+    return None
+
+
+def _latest_transcript(tt, cwd):
+    """The newest session transcript of the working directory `cwd`, or None."""
+    base = os.path.realpath(tt.projects_dir())
+    best, best_mtime = None, -1.0
+    for slug in tt.slug_candidates(cwd):
+        folder = os.path.realpath(os.path.join(base, slug))
+        if folder == base or os.path.commonpath([base, folder]) != base or not os.path.isdir(folder):
+            continue
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            if not UUID_NAME.match(name) or os.path.islink(path) or not os.path.isfile(path):
+                continue
+            mtime = os.stat(path).st_mtime
+            if mtime > best_mtime:
+                best, best_mtime = path, mtime
+    return best
+
+
+def add_tokens(model, mine_paths, tt=None):
+    """Set entry["tokens"] (all tokens of the unit's newest session) and model["tokens_today"].
+
+    Every failure leaves the field None: tokens are an extra, never a reason for an error.
+    """
+    tt = tt or _tokens_module()
+    model["tokens_today"] = None
+    for e in model["entries"]:
+        e["tokens"] = None
+    if tt is None:
+        return model
+    for e in model["entries"]:
+        cwd = mine_paths.get(e["session"]) if e["session"] else None
+        if not cwd:
+            continue
+        try:
+            path = _latest_transcript(tt, cwd)
+            totals = tt.session_totals(path) if path else None
+            e["tokens"] = totals["total"] if totals else None
+        except Exception:
+            e["tokens"] = None
+    try:
+        today = tt.day_totals()
+        model["tokens_today"] = today["total"] if today["messages"] else None
+    except Exception:
+        model["tokens_today"] = None
+    return model
+
+
+def fmt_tokens(n):
+    if n < 1000:
+        return str(n)
+    if n < 1_000_000:
+        return f"{n / 1000:.1f}k".replace(".0k", "k")
+    return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
+
+
 # ------------------------------------------------------------------ SwiftBar output
 
 def _q(value):
@@ -563,6 +648,9 @@ def render(model, cfg, now, script, warning=None, panes=None):
         out.append(_muted(f"{model['counts']['harvested']} harvested (hidden)",
                           **_sym(SYMBOL["harvested"], "harvested")))
     out.append("---")
+    if model.get("tokens_today") is not None:
+        out.append(_muted(f"Tokens today: {fmt_tokens(model['tokens_today'])}", sfimage="number",
+                          sfcolor=MUTED))
     out.append(_muted(f"Updated {time.strftime('%H:%M', time.localtime(now))}", sfimage="clock",
                       sfcolor=MUTED))
     out.append(_line("Refresh now", sfimage="arrow.clockwise", refresh="true"))
@@ -598,6 +686,8 @@ def _item(e, cfg, script, panes):
     meta = [clean(e["project"], 40)] if e["project"] else []
     if e["age"] is not None:
         meta.append(fmt_age(e["age"]))
+    if e.get("tokens") is not None:
+        meta.append(f"{fmt_tokens(e['tokens'])} tokens")
     if e["pr"]:
         meta.append(f"PR #{e['pr']}")
     if meta:
@@ -633,6 +723,7 @@ def to_json(model, cfg, now, warning=None, panes=None, error=None):
                            and now - e["mtime"] > DONE_RECENT),
             "pane": (panes.get(e["session"]) or "") if e["session"] else "",
             "attach_command": _attach_or_none(cfg, e["session"]) if e["alive"] else None,
+            "tokens": e.get("tokens"),
         })
     divergences = [{"kind": d["kind"], "unit": d["unit"], "session": d["session"], "text": d["text"],
                     "attach_command": _attach_or_none(cfg, d["session"])}
@@ -640,13 +731,14 @@ def to_json(model, cfg, now, warning=None, panes=None, error=None):
     return {"schema": JSON_SCHEMA, "generated_at": now, "warning": warning, "error": error,
             "tmux_reason": model["tmux_reason"], "globs": model["globs"],
             "manifest_dir": model["manifest_dir"], "counts": model["counts"],
+            "tokens_today": model.get("tokens_today"),
             "units": units, "divergences": divergences}
 
 
 def empty_json(now, warning=None, error=None):
     return {"schema": JSON_SCHEMA, "generated_at": now, "warning": warning, "error": error,
             "tmux_reason": "", "globs": 0, "manifest_dir": "", "counts": {k: 0 for k in STATES},
-            "units": [], "divergences": []}
+            "tokens_today": None, "units": [], "divergences": []}
 
 
 # ------------------------------------------------------------------ actions
@@ -699,6 +791,11 @@ def collect(cfg, now):
     rows = load_rows(cfg, now)
     tmux = list_sessions(cfg)
     model = build_model(cfg, rows, tmux, now)
+    paths = {s["name"]: s["path"] for s in tmux["sessions"]}
+    try:
+        add_tokens(model, paths)
+    except Exception:  # tokens are optional
+        pass
     panes = {}
     for e in model["entries"]:
         if len(panes) >= MAX_PANES:

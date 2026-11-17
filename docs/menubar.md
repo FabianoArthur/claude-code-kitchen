@@ -190,8 +190,15 @@ python3 menubar/kitchen.30s.py --json | python3 -m json.tool
 | `tmux_reason` | why `tmux` could not be asked (empty when it answered) |
 | `globs`, `manifest_dir` | how many manifest globs are configured, and the folder of the first one |
 | `counts` | units per state (`waiting`, `running`, `queued`, `done`, …) |
-| `units[]` | one object per manifest row: `unit`, `project`, `status`, `reason`, `size`, `route`, `branch`, `pr`, `pr_link`, `session`, `alive`, `done`, `age_seconds`, `age_text`, `recent`, `pane` (last screen line), `attach_command` |
+| `units[]` | one object per manifest row: `unit`, `project`, `status`, `reason`, `size`, `route`, `branch`, `pr`, `pr_link`, `session`, `alive`, `done`, `age_seconds`, `age_text`, `recent`, `pane` (last screen line), `attach_command`, `tokens` (optional: all tokens of the newest session transcript in the unit's directory, or `null`) |
+| `tokens_today` | optional: all tokens of every session transcript stamped today, or `null` |
 | `divergences[]` | `kind`, `unit`, `session`, `text`, `attach_command` |
+
+Tokens come from `transcript_tokens.py` (found through `KITCHEN_SCRIPTS_DIR`, the installed
+orchestrate skill, or the repo checkout) and the transcripts folder (`KITCHEN_PROJECTS_DIR`,
+default `~/.claude/projects`). Both fields are plain counts and stay `null` when there is no
+transcript or no helper; the menu then simply omits them. The menu shows "Tokens today" in its
+footer and the unit's total in its gray metadata line.
 
 It reads the same config and has the same guarantees as the menu: read-only, short `tmux`
 timeouts, sanitised names. It holds nothing about Claude credentials — the app's usage card

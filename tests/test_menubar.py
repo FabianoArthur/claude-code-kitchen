@@ -60,6 +60,8 @@ def mod():
 def isolated_config(monkeypatch, tmp_path):
     """Never read the real user config: point it at a file that does not exist."""
     monkeypatch.setenv("KITCHEN_MENUBAR_CONFIG", str(tmp_path / "no-config.json"))
+    # tokens read transcripts: never the real ones
+    monkeypatch.setenv("KITCHEN_PROJECTS_DIR", str(tmp_path / "no-projects"))
 
 
 @pytest.fixture
@@ -894,8 +896,10 @@ def test_to_json_has_no_credential_or_usage_fields(mod, cfg, tmp_path):
     cfg, model = _json_model(mod, cfg, tmp_path)
     out = mod.to_json(model, cfg, NOW)
     keys = set(out) | {k for u in out["units"] for k in u} | {k for d in out["divergences"] for k in d}
-    for word in ("token", "credential", "oauth", "usage", "keychain", "bearer"):
+    for word in ("credential", "oauth", "usage", "keychain", "bearer"):
         assert not [k for k in keys if word in k.lower()], word
+    # the only token fields are counts: no secret can hide in a number
+    assert {k for k in keys if "token" in k.lower()} == {"tokens", "tokens_today"}
 
 
 def test_main_json_prints_one_object(mod, monkeypatch, tmp_path, capsys):
@@ -937,3 +941,123 @@ def test_main_without_json_still_prints_the_swiftbar_menu(mod, monkeypatch, tmp_
     assert mod.main([]) == 0
     out = capsys.readouterr().out
     assert not out.lstrip().startswith("{") and "---" in out
+
+
+# ---------------------------------------------------------------- tokens
+
+def _transcript(projects, cwd, session_id, totals, stamp=None):
+    """A minimal transcript: one assistant message per (id, input, output) in `totals`."""
+    import datetime
+    slug = "".join(c if c.isalnum() else "-" for c in str(cwd))
+    folder = projects / slug
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = stamp or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    lines = [json.dumps({"type": "assistant", "timestamp": stamp,
+                         "message": {"id": mid, "usage": {"input_tokens": i, "output_tokens": o}}})
+             for mid, i, o in totals]
+    path = folder / f"{session_id}.jsonl"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def _tokens_env(monkeypatch, mod, tmp_path):
+    projects = tmp_path / "projects"
+    monkeypatch.setenv("KITCHEN_PROJECTS_DIR", str(projects))
+    monkeypatch.setenv("KITCHEN_SCRIPTS_DIR", str(ROOT / "skills" / "orchestrate" / "scripts"))
+    return projects
+
+
+def test_tokens_per_unit_and_for_the_day(mod, cfg, tmp_path, monkeypatch):
+    projects = _tokens_env(monkeypatch, mod, tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    _transcript(projects, work, SID, [("m1", 100, 50), ("m2", 1000, 350)])
+    cfg, model = _json_model(mod, cfg, tmp_path, sessions=[("kitchen-rate-limit", int(NOW) - 60, str(work))])
+    mod.add_tokens(model, {"kitchen-rate-limit": str(work)})
+    out = mod.to_json(model, cfg, NOW)
+    by = {u["unit"]: u for u in out["units"]}
+    assert by["rate-limit"]["tokens"] == 1500          # positive control: the transcript was read
+    assert by["export-csv"]["tokens"] is None          # no live session, no cwd, no number
+    assert out["tokens_today"] == 1500
+    assert out["schema"] == 1
+
+
+def test_no_transcript_means_null_and_no_error(mod, cfg, tmp_path, monkeypatch):
+    _tokens_env(monkeypatch, mod, tmp_path)           # projects folder does not exist
+    work = tmp_path / "work"
+    work.mkdir()
+    cfg, model = _json_model(mod, cfg, tmp_path, sessions=[("kitchen-rate-limit", int(NOW) - 60, str(work))])
+    mod.add_tokens(model, {"kitchen-rate-limit": str(work)})
+    out = mod.to_json(model, cfg, NOW)
+    assert out["tokens_today"] is None and out["error"] is None
+    assert all(u["tokens"] is None for u in out["units"])
+    assert "Tokens today" not in mod.render(model, cfg, NOW, "/x/kitchen.30s.py")
+
+
+def test_missing_helper_means_null(mod, cfg, tmp_path, monkeypatch):
+    monkeypatch.setenv("KITCHEN_SCRIPTS_DIR", str(tmp_path / "nowhere"))
+    monkeypatch.setattr(mod.os.path, "expanduser", lambda p: str(tmp_path / "home"))
+    monkeypatch.setattr(mod.os.path, "realpath", lambda p: str(tmp_path / "x" / "kitchen.30s.py"))
+    assert mod._tokens_module() is None
+    cfg, model = _json_model(mod, cfg, tmp_path)
+    mod.add_tokens(model, {})
+    assert mod.to_json(model, cfg, NOW)["tokens_today"] is None
+
+
+def test_a_failing_helper_never_raises(mod, cfg, tmp_path):
+    class Broken:
+        @staticmethod
+        def projects_dir():
+            raise OSError("boom")
+
+        @staticmethod
+        def day_totals():
+            raise OSError("boom")
+
+    cfg, model = _json_model(mod, cfg, tmp_path, sessions=[("kitchen-rate-limit", int(NOW) - 60, str(tmp_path))])
+    mod.add_tokens(model, {"kitchen-rate-limit": str(tmp_path)}, tt=Broken)
+    out = mod.to_json(model, cfg, NOW)
+    assert out["tokens_today"] is None and all(u["tokens"] is None for u in out["units"])
+
+
+def test_newest_transcript_of_the_directory_wins(mod, tmp_path, monkeypatch):
+    projects = _tokens_env(monkeypatch, mod, tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    old = _transcript(projects, work, SID, [("a", 1, 1)])
+    new = _transcript(projects, work, "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee", [("b", 5, 5)])
+    os.utime(old, (NOW - 500, NOW - 500))
+    tt = mod._tokens_module()
+    assert mod._latest_transcript(tt, str(work)) == os.path.realpath(new)
+    assert mod._latest_transcript(tt, str(tmp_path / "other")) is None
+
+
+def test_menu_shows_tokens_today_and_per_unit(mod, cfg, tmp_path, monkeypatch):
+    projects = _tokens_env(monkeypatch, mod, tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    _transcript(projects, work, SID, [("m1", 1000, 500)])
+    cfg, model = _json_model(mod, cfg, tmp_path, sessions=[("kitchen-rate-limit", int(NOW) - 60, str(work))])
+    mod.add_tokens(model, {"kitchen-rate-limit": str(work)})
+    menu = mod.render(model, cfg, NOW, "/x/kitchen.30s.py")
+    assert "Tokens today: 1.5k" in menu
+    assert "1.5k tokens" in menu
+
+
+def test_fmt_tokens(mod):
+    got = [mod.fmt_tokens(n) for n in (0, 999, 1000, 1500, 2_000_000, 1_250_000)]
+    assert got == ["0", "999", "1k", "1.5k", "2M", "1.2M"]
+
+
+def test_main_json_includes_tokens_fields(mod, monkeypatch, tmp_path, capsys):
+    write(tmp_path / "m-manifest.md", EN_MANIFEST)
+    cfgfile = tmp_path / "c.json"
+    cfgfile.write_text(json.dumps({"manifests": [str(tmp_path / "*manifest*.md")],
+                                   "tmux": str(tmp_path / "no-such-tmux")}))
+    monkeypatch.setenv("KITCHEN_MENUBAR_CONFIG", str(cfgfile))
+    assert mod.main(["--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "tokens_today" in out and all("tokens" in u for u in out["units"])
