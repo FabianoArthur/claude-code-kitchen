@@ -96,8 +96,14 @@ def test_changing_the_doc_after_dispatch_changes_nothing(env):
 @pytest.mark.parametrize("bad", ["docs__read", "mcp__docs", "mcp__docs__", "mcp__do cs__x",
                                  "mcp__docs__a b", "mcp____x", "read"])
 def test_bad_name_is_an_error(env, bad):
+    # unit_snapshot.write already refuses these names at dispatch; mcp_config re-checks
+    # a snapshot that was edited by hand.
     tmp_path, work, _ = env
-    dispatch(tmp_path, work, f"mcp: [{bad}]")
+    dispatch(tmp_path, work, "mcp: [mcp__docs__read]")
+    snap_file = snap.snapshot_path("U-1")
+    data = json.loads(snap_file.read_text(encoding="utf-8"))
+    data["mcp"] = [bad]
+    snap_file.write_text(json.dumps(data), encoding="utf-8")
     r = run("write", "--unit", "U-1")
     assert r.returncode == 2 and "invalid MCP name" in r.stderr
     assert not (work / ".kitchen").exists()
