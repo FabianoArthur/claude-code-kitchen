@@ -7,7 +7,9 @@ reading stdin or writing a log, so installing it never touches the waiter's own 
 
 Input: the hook JSON on stdin (`tool_name`, `tool_input`). Output: exit 0 (allow) or exit 2 (deny,
 reason on stderr). One jsonl line per call goes to `guard.jsonl`:
-`{ts, unit, tool, rule, decision, mode, detail}`.
+`{ts, unit, tool, rule, decision, mode, detail}`. The log is safe to keep: secrets are masked, every
+text field is cut at 200 characters, and Write/Edit calls record only the path and the size, never
+the content. The first write of a new day renames the previous file to `guard-YYYY-MM-DD.jsonl`.
 
 Modes (`"mode"` in `~/.claude/kitchen-guard.json`):
   log                 never blocks; a rule that would block is logged as `would_deny`
@@ -37,16 +39,64 @@ import guard_rules  # noqa: E402
 MODES = ("log", "deny-irreversible", "deny")
 DEFAULT_MODE = "deny-irreversible"
 FIELD_LIMIT = 200
+CONTENT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+_CONTENT_KEYS = ("content", "old_string", "new_string", "new_source")
 _SECRET = re.compile(
-    r"(gh[pousr]_\w{10,}|sk-[\w-]{10,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{12,})"
+    r"(gh[pousr]_\w{10,}|sk-[\w-]{10,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{12,}"
+    r"|Bearer\s+[\w.~+/=-]{8,})"
     r"|((?:token|password|passwd|secret|api[_-]?key)\s*[=:]\s*)\S+",
     re.IGNORECASE,
 )
 
 
+def now() -> float:
+    """The clock; tests replace it."""
+    return time.time()
+
+
 def _mask(text: str) -> str:
     text = _SECRET.sub(lambda m: (m.group(2) + "***") if m.group(2) else "***", text)
     return text[:FIELD_LIMIT]
+
+
+def _size(tool_input: dict) -> int:
+    """Bytes of content a file tool carries (the content itself is never logged)."""
+    total = 0
+    for key in _CONTENT_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, str):
+            total += len(value.encode("utf-8"))
+    edits = tool_input.get("edits")
+    if isinstance(edits, list):
+        total += sum(_size(edit) for edit in edits if isinstance(edit, dict))
+    return total
+
+
+def summarize(tool: str, tool_input: dict) -> str:
+    """What the log may say about a call: the command, or for file tools only path and size."""
+    if tool in CONTENT_TOOLS:
+        path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+        suffix = f" ({_size(tool_input)} bytes)"
+        return _mask(str(path))[: FIELD_LIMIT - len(suffix)] + suffix  # the size always survives the cut
+    return str(tool_input.get("command", ""))
+
+
+def _rotate(directory: str, stamp: float) -> None:
+    """Move a log last written on an earlier day to guard-YYYY-MM-DD.jsonl."""
+    current = os.path.join(directory, "guard.jsonl")
+    try:
+        last = time.strftime("%Y-%m-%d", time.localtime(os.stat(current).st_mtime))
+    except OSError:
+        return
+    if last >= time.strftime("%Y-%m-%d", time.localtime(stamp)):
+        return
+    target = os.path.join(directory, f"guard-{last}.jsonl")
+    if os.path.exists(target):  # never overwrite a day already rotated: append instead
+        with open(current, "rb") as src, open(target, "ab") as dst:
+            dst.write(src.read())
+        os.remove(current)
+    else:
+        os.replace(current, target)
 
 
 def _home_claude(env) -> str:
@@ -74,11 +124,13 @@ def write_log(env, mode: str, tool: str, rule: str, decision: str, detail: str =
     try:
         directory = env.get("KITCHEN_LOG_DIR") or os.path.join(_home_claude(env), "kitchen-logs")
         os.makedirs(directory, mode=0o700, exist_ok=True)
+        stamp = now()
+        _rotate(directory, stamp)
         line = {
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(stamp)),
             "unit": _mask(env.get("KITCHEN_UNIT", "")),
             "tool": _mask(tool),
-            "rule": rule,
+            "rule": rule[:FIELD_LIMIT],
             "decision": decision,
             "mode": mode,
             "detail": _mask(detail),
@@ -124,11 +176,11 @@ def main(env=None, stdin=None, stderr=None) -> int:
         tool = str(event.get("tool_name", ""))
         hit = evaluate(event, config)
         if hit is None:
-            write_log(env, mode, tool, "", "allow")
+            write_log(env, mode, tool, "", "allow", summarize(tool, event["tool_input"]))
             return 0
         rule, irreversible, reason = hit
         blocks = mode == "deny" or (mode == "deny-irreversible" and irreversible)
-        detail = str(event["tool_input"].get("command", ""))
+        detail = summarize(tool, event["tool_input"])
         if blocks:
             write_log(env, mode, tool, rule, "deny", detail)
             print(f"guard: {rule}: {reason}. Ask the human.", file=stderr)
@@ -197,6 +249,14 @@ def selftest() -> int:
             lines = [json.loads(line) for line in handle]
         required = {"ts", "unit", "tool", "rule", "decision", "mode"}
         check("jsonl lines carry the required fields", all(required <= set(line) for line in lines))
+        secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0"
+        main(env=env, stdin=io.StringIO(bash_event(f"git push origin main {secret}")), stderr=io.StringIO())
+        write = json.dumps({"tool_name": "Write", "tool_input": {"file_path": "/tmp/x", "content": "BODY"}})
+        main(env=env, stdin=io.StringIO(write), stderr=io.StringIO())
+        with open(os.path.join(tmp, "logs", "guard.jsonl"), encoding="utf-8") as handle:
+            text = handle.read()
+        check("a token is masked in the log", secret not in text)
+        check("Write logs path and size, not content", "BODY" not in text and "/tmp/x (4 bytes)" in text)
     print("\nselftest:", "FAILED" if failures else "ALL PASSED")
     return 1 if failures else 0
 
