@@ -1,5 +1,7 @@
 """safe_git.py — git on a unit-written tree, with an allowlisted config."""
+import ast
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -919,3 +921,232 @@ def test_selftest():
     res = run_cli("--selftest")
     assert res.returncode == 0, res.stdout + res.stderr
     assert "ALL PASSED" in res.stdout
+
+
+# ---- gh through safe_git ----------------------------------------------------------------
+
+needs_sh = pytest.mark.skipif(not POSIX, reason="needs a #!/bin/sh fake gh")
+
+
+@pytest.fixture
+def fake_gh(tmp_path, monkeypatch, kitchen_home):
+    """A `gh` first on PATH that dumps its environment, cwd and a `git status` to `dump/`."""
+    dump = tmp_path / "dump"
+    dump.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    script = bindir / "gh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f"/usr/bin/env > '{dump}/env'\n"
+        f"pwd > '{dump}/cwd'\n"
+        f"git status > '{dump}/git.out' 2>&1\n"
+        f"echo $? > '{dump}/git.rc'\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    # The autouse init ran with whatever `gh` the machine has (a CI image may even carry its own
+    # credential helper); rebuild the kitchen gitconfig so it names this fake `gh`.
+    (kitchen_home / ".claude" / "kitchen-git" / "gitconfig").unlink()
+    safe_git.init()
+    return dump
+
+
+def run_dir(home, name="pr-ST1", mode=0o700):
+    path = home / ".claude" / "kitchen-runs" / name
+    path.mkdir(parents=True, exist_ok=True)
+    path.chmod(mode)
+    return path
+
+
+def dumped_env(dump):
+    lines = (dump / "env").read_text(encoding="utf-8").splitlines()
+    return dict(line.partition("=")[::2] for line in lines if "=" in line)
+
+
+@needs_sh
+def test_gh_runs_with_the_closed_environment_and_no_repo(kitchen_home, fake_gh, monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "secret-token")
+    monkeypatch.setenv("GH_HOST", "evil.example.com")
+    monkeypatch.setenv("GIT_DIR", "/somewhere/else")
+    monkeypatch.setenv("GIT_WORK_TREE", "/somewhere/else")
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/not/the/kitchen")
+    cwd = run_dir(kitchen_home)
+    safe_git.gh("pr", "list", "--repo", "o/r", cwd=cwd)
+    assert (fake_gh / "env").exists()  # positive control: the fake gh ran
+    env = dumped_env(fake_gh)
+    kitchen = kitchen_home / ".claude" / "kitchen-git"
+    assert env["GIT_CONFIG_GLOBAL"] == str(kitchen / "gitconfig")
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert env["XDG_CONFIG_HOME"] == str(kitchen / "xdg")
+    assert os.listdir(kitchen / "xdg") == []
+    assert "GH_TOKEN" not in env and "GH_HOST" not in env and "GIT_WORK_TREE" not in env
+    assert [k for k in env if k.startswith("GH_")] == ["GH_CONFIG_DIR"]
+    assert os.path.isabs(env["GH_CONFIG_DIR"])
+    real = os.path.realpath(cwd)
+    assert env["GIT_DIR"] == os.path.join(real, ".kitchen-no-git")
+    assert env["GIT_CEILING_DIRECTORIES"] == os.path.dirname(real)
+    count = int(env["GIT_CONFIG_COUNT"])
+    pairs = {env[f"GIT_CONFIG_KEY_{n}"]: env[f"GIT_CONFIG_VALUE_{n}"] for n in range(count)}
+    assert pairs["core.fsmonitor"] == "false" and pairs["core.hooksPath"] == "/dev/null"
+    for key in ("submodule.recurse", "diff.ignoreSubmodules", "status.submoduleSummary",
+                "fetch.recurseSubmodules", "protocol.file.allow"):
+        assert key in pairs
+    assert (fake_gh / "cwd").read_text(encoding="utf-8").strip() == real
+    assert (fake_gh / "git.rc").read_text(encoding="utf-8").strip() != "0"
+    assert "not a git repository" in (fake_gh / "git.out").read_text(encoding="utf-8")
+
+
+@needs_sh
+def test_global_fsmonitor_never_reaches_gh_but_arms_a_plain_git(tmp_path, kitchen_home, fake_gh):
+    # A repo in the parent of HOME, and a ~/.gitconfig whose fsmonitor is a marker script.
+    plain("init", "-q", str(tmp_path))
+    (tmp_path / "a.txt").write_text("x\n", encoding="utf-8")
+    plain("add", "a.txt", cwd=tmp_path)
+    plain("commit", "-q", "-m", "first", cwd=tmp_path)
+    marker = tmp_path / "marker"
+    script = make_marker_script(tmp_path / "fsm.sh", marker, body="exit 1")
+    (kitchen_home / ".gitconfig").write_text(f"[core]\n\tfsmonitor = {script}\n",
+                                             encoding="utf-8")
+    cwd = run_dir(kitchen_home)
+    safe_git.gh("pr", "create", "--repo", "o/r", "--head", "feat/x", cwd=cwd)
+    assert (fake_gh / "env").exists()  # the fake gh ran, and ran `git status` inside
+    assert not marker.exists()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["HOME"] = str(kitchen_home)
+    subprocess.run(["git", "status"], cwd=cwd, env=env, capture_output=True, check=True)
+    assert marker.exists()  # armed: the same git, with the ordinary environment, finds the repo
+
+
+@needs_sh
+@pytest.mark.parametrize("where", ["clone", "worktree"])
+def test_gh_cwd_in_the_clone_or_a_worktree_is_refused(repo, fake_gh, where):
+    clone, wt = repo
+    target = clone if where == "clone" else wt
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.gh("pr", "list", "--repo", "o/r", cwd=target, clone=clone)
+    assert str(target) in str(exc.value) and "inside the clone or a worktree" in str(exc.value)
+    assert not (fake_gh / "env").exists()
+
+
+@needs_sh
+@pytest.mark.parametrize("name", ["doctor", "pr-ST1", "proof-A.1_b"])
+def test_gh_accepts_the_run_and_doctor_folders(kitchen_home, fake_gh, name):
+    safe_git.gh("auth", "status", cwd=run_dir(kitchen_home, name))
+    assert (fake_gh / "env").exists()
+
+
+def refuse_gh(*args, cwd, fake_gh, text, **kw):
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.gh(*args, cwd=cwd, **kw)
+    assert text in str(exc.value) and "\n" not in str(exc.value)
+    assert not (fake_gh / "env").exists()  # the refusal came before gh ran
+
+
+@needs_sh
+def test_gh_cwd_outside_kitchen_runs_or_badly_named_is_refused(tmp_path, kitchen_home, fake_gh):
+    args = ("auth", "status")
+    other = tmp_path / "elsewhere"
+    other.mkdir(mode=0o700)
+    refuse_gh(*args, cwd=other, fake_gh=fake_gh, text="kitchen-runs")
+    refuse_gh(*args, cwd=run_dir(kitchen_home, "nodash"), fake_gh=fake_gh, text="<kind>-<ID>")
+    nested = run_dir(kitchen_home, "pr-ST1") / "deeper"
+    nested.mkdir(mode=0o700)
+    refuse_gh(*args, cwd=nested, fake_gh=fake_gh, text="kitchen-runs")
+
+
+@needs_sh
+def test_gh_cwd_with_loose_mode_is_refused(kitchen_home, fake_gh):
+    cwd = run_dir(kitchen_home, mode=0o755)
+    refuse_gh("auth", "status", cwd=cwd, fake_gh=fake_gh, text="mode")
+
+
+@needs_sh
+def test_gh_cwd_with_a_dot_git_here_or_above_is_refused(kitchen_home, fake_gh):
+    cwd = run_dir(kitchen_home)
+    (cwd / ".git").mkdir()
+    refuse_gh("auth", "status", cwd=cwd, fake_gh=fake_gh, text=".git exists")
+    (cwd / ".git").rmdir()
+    safe_git.gh("auth", "status", cwd=cwd)
+    assert (fake_gh / "env").exists()  # control: without the .git it runs
+    (fake_gh / "env").unlink()
+    (kitchen_home / ".claude" / ".git").mkdir()  # between the cwd and HOME
+    refuse_gh("auth", "status", cwd=cwd, fake_gh=fake_gh, text=".git exists")
+    (kitchen_home / ".claude" / ".git").rmdir()
+    (kitchen_home / ".git").mkdir()  # HOME itself counts
+    refuse_gh("auth", "status", cwd=cwd, fake_gh=fake_gh, text=".git exists")
+
+
+@needs_sh
+@pytest.mark.parametrize("args,text", [
+    ((), "needs arguments"),
+    (("pr", "list"), "--repo"),
+    (("pr", "list", "--repo", "noslash"), "--repo"),
+    (("pr", "list", "--repo", "o/r", "--repo", "bad name/x"), "--repo"),
+    (("pr", "create", "--repo", "o/r", "--title", "t"), "--head"),
+    (("api", "user"), "repos/<owner>/<name>"),
+    (("api", "-X", "POST", "repos/o/r/pulls"), "repos/<owner>/<name>"),
+    (("auth", "login"), "--repo"),
+])
+def test_gh_call_shapes_that_are_refused(kitchen_home, fake_gh, args, text):
+    refuse_gh(*args, cwd=run_dir(kitchen_home), fake_gh=fake_gh, text=text)
+
+
+@needs_sh
+@pytest.mark.parametrize("args", [
+    ("auth", "status"),
+    ("api", "repos/o/r/pulls/3"),
+    ("pr", "view", "3", "--repo", "o/r"),
+    ("pr", "view", "3", "-R", "o/r"),
+    ("pr", "view", "3", "--repo=o/r"),
+    ("pr", "create", "--repo", "o/r", "--head", "feat/x", "--title", "t"),
+    ("pr", "create", "-R", "o/r", "--head=feat/x"),
+])
+def test_gh_call_shapes_that_run(kitchen_home, fake_gh, args):
+    safe_git.gh(*args, cwd=run_dir(kitchen_home))
+    assert (fake_gh / "env").exists()
+
+
+GH_WORDS = re.compile(r"(^|[\s/\\])gh($|\s)")
+SPAWNERS = {"run", "Popen", "call", "check_call", "check_output", "system", "popen",
+            "execv", "execve", "execvp", "execvpe", "execl", "execle", "execlp", "execlpe",
+            "spawnv", "spawnve", "spawnvp", "spawnl", "spawnle", "spawnlp", "posix_spawn",
+            "posix_spawnp"}
+
+
+def gh_spawns(source):
+    """Line numbers of subprocess/os.exec*/os.spawn* calls that mention gh in their arguments."""
+    hits = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name not in SPAWNERS:
+            continue
+        for sub in ast.walk(node):
+            text = sub.value if isinstance(sub, ast.Constant) and isinstance(sub.value, str) else None
+            ident = sub.id if isinstance(sub, ast.Name) else None
+            named = (ident or "").startswith("gh_") or ident in ("GH_BIN", "gh")
+            if (text is not None and GH_WORDS.search(text)) or named:
+                hits.append(node.lineno)
+                break
+    return hits
+
+
+def test_static_scan_finds_a_planted_gh_call():
+    planted = (
+        "import os, subprocess\n"
+        "subprocess.run(['gh', 'pr', 'list'])\n"
+        "subprocess.Popen('gh pr view 1', shell=True)\n"
+        "os.execv('/usr/bin/gh', ['gh'])\n"
+        "subprocess.run(['git', 'status'])\n")
+    assert gh_spawns(planted) == [2, 3, 4]
+
+
+def test_only_safe_git_starts_gh():
+    scripts = sorted(p for p in ORCH.glob("*.py") if p.name != "safe_git.py")
+    assert scripts  # the scan has something to read
+    own = (ORCH / "safe_git.py").read_text(encoding="utf-8")
+    assert gh_spawns(own)  # control: the scan does see the one legitimate call
+    offenders = {p.name: gh_spawns(p.read_text(encoding="utf-8")) for p in scripts}
+    assert {k: v for k, v in offenders.items() if v} == {}
