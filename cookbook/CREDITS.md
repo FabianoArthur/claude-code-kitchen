@@ -36,3 +36,11 @@ it, pinned to the commit above, into the git-ignored `pantry/` folder.
 
 If you are an author of a project listed here and want something changed or removed, please open
 an issue.
+
+## Third-party skills
+
+- `archify` — tt-a1i, <https://github.com/tt-a1i/archify>, Apache-2.0 (README) and MIT (LICENSE in the skill folder).
+- `ponytail` — DietrichGebert, <https://github.com/DietrichGebert/ponytail>, MIT.
+
+Neither is vendored: `skills/third-party/install.sh` downloads a pinned commit (see
+[`docs/third-party-skills.md`](../docs/third-party-skills.md)).
