@@ -47,8 +47,10 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -563,15 +565,27 @@ def fmt_tokens(n):
 # ------------------------------------------------------------------ alerts (re-notify, escalate)
 
 def alert_state_path():
-    base = os.environ.get("TMPDIR") or "/tmp"
-    return Path(base) / f"kitchen-menubar-alerts-{getattr(os, 'getuid', lambda: 0)()}.json"
+    """The re-alert state lives with the other kitchen logs, never in $TMPDIR or /tmp."""
+    base = os.environ.get("KITCHEN_LOGS_DIR") or os.path.expanduser("~/.claude/kitchen-logs")
+    return Path(base) / "menubar-alerts.json"
 
 
 def load_alert_state(path):
-    """{"since": {key: ts}, "sent": {key: level}}; anything unreadable counts as empty."""
+    """{"since": {key: ts}, "sent": {key: level}}. Anything unreadable counts as empty: bad
+    JSON, a symlink in place of the file (O_NOFOLLOW), a file that is not ours or that is
+    readable or writable by others."""
     empty = {"since": {}, "sent": {}}
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return empty
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            st = os.fstat(fh.fileno())
+            if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid()
+                    or st.st_mode & 0o077):
+                return empty
+            data = json.loads(fh.read())
         since, sent = data["since"], data["sent"]
         if not (isinstance(since, dict) and isinstance(sent, dict)):
             return empty
@@ -582,12 +596,26 @@ def load_alert_state(path):
 
 
 def save_alert_state(path, state):
+    """Write through a 0600 temporary file in the same folder, then os.replace. The folder is
+    created 0700. Never writes through a symlink: replace swaps the link itself."""
+    path = Path(path)
+    tmp = None
     try:
-        tmp = Path(str(path) + ".tmp")
-        tmp.write_text(json.dumps(state), encoding="utf-8")
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(state))
+        os.chmod(tmp, 0o600)
         os.replace(tmp, path)
+        tmp = None
     except OSError:
         pass
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def alert_level(waited, minutes):
@@ -619,8 +647,8 @@ def add_alerts(model, cfg, now, pane_waiting=None, state_path=None, run=subproce
     """Set entry["alert"] (0, 1 or 2) from how long a unit has waited on the human.
 
     A unit waits when its row is waiting, or when it is alive, not done, and its pane asks a
-    question. The clock starts the first time we see it waiting (kept in the state file under
-    $TMPDIR); for waiting rows the manifest mtime counts too, whichever is older. A
+    question. The clock starts the first time we see it waiting (kept in a private file under
+    the kitchen logs folder); for waiting rows the manifest mtime counts too, whichever is older. A
     notification goes out once per level and unit; the state forgets a unit once it stops
     waiting."""
     pane_waiting = pane_waiting or {}
