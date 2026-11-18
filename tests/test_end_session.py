@@ -230,3 +230,146 @@ def test_selftest_passes():
     r = run("--selftest")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "SELFTEST OK" in r.stdout
+
+
+# --- sweep by KITCHEN_UNIT after the kill -------------------------------------------------
+
+LINUX_ONLY = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="needs /proc/<pid>/environ")
+
+# Double fork: the parent exits, the grandchild moves to a new session and execs a sleeper that
+# records its own pid, so it is an orphan outside the registered tree.
+ORPHAN = (
+    "import os,sys\n"
+    "if os.fork() == 0:\n"
+    "    os.setsid()\n"
+    "    if os.fork() == 0:\n"
+    "        os.execvp('/bin/sh', ['sh', '-c', 'echo $$ > \"$1\"; exec sleep 60', 'sh', sys.argv[1]])\n"
+    "    os._exit(0)\n"
+    "os.wait()\n"
+)
+
+
+def launch_orphan(tmp_path, name, env, prefix=()):
+    """Start a double-forked sleeper with `env`; returns its pid (read from a file it writes)."""
+    pidfile = tmp_path / name
+    subprocess.run([*prefix, sys.executable, "-c", ORPHAN, str(pidfile)], env=env, check=True, timeout=20)
+    end = time.monotonic() + 10
+    while time.monotonic() < end:
+        if pidfile.exists() and pidfile.read_text().strip():
+            return int(pidfile.read_text())
+        time.sleep(0.05)
+    raise AssertionError("orphan did not start")
+
+
+def register_root(unit_id):
+    root = spawn_reaped(["sleep", "60"], start_new_session=True)
+    assert es.register(unit_id, root.pid) == 0
+    return root
+
+
+@LINUX_ONLY
+def test_sweep_kills_double_forked_orphan_and_spares_the_rest(logs, tmp_path):
+    marked = dict(os.environ, KITCHEN_UNIT="sw1")
+    other = dict(os.environ, KITCHEN_UNIT="sw1-other")
+    early = launch_orphan(tmp_path, "early", marked)  # marked, but started before the register
+    time.sleep(1.2)  # lstart has one-second resolution
+    root = register_root("sw1")
+    orphan = launch_orphan(tmp_path, "orphan", marked)
+    foreign = launch_orphan(tmp_path, "foreign", other)
+    scrubbed = launch_orphan(tmp_path, "scrubbed", {}, prefix=["/usr/bin/env", "-i"])
+    try:
+        assert alive(orphan) and alive(early) and alive(foreign) and alive(scrubbed)  # positive control
+        assert es.end("sw1", grace=3) == 0
+        assert wait_gone(orphan)
+        text = (logs / "end-sw1.log").read_text()
+        assert f"sweep: pid={orphan} " in text
+        assert f"pid={early} " not in text
+        assert alive(early) and alive(foreign)
+        assert alive(scrubbed)  # residue: `env -i` drops the mark, so the sweep cannot see it
+    finally:
+        for pid in (early, foreign, scrubbed, orphan, root.pid):
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+
+
+@LINUX_ONLY
+def test_sweep_with_nothing_found_logs_no_sweep_line(logs):
+    root = register_root("sw2")
+    try:
+        assert es.end("sw2", grace=3) == 0
+        text = (logs / "end-sw2.log").read_text()
+        assert "killed tree" in text  # the end ran
+        assert "sweep" not in text
+    finally:
+        root.kill()
+
+
+@LINUX_ONLY
+def test_sweep_skips_unreadable_pids_and_never_itself(logs, tmp_path, monkeypatch):
+    fake = tmp_path / "proc"
+    (fake / "123").mkdir(parents=True)  # no environ file: unreadable, must not stop the loop
+    (fake / "abc").mkdir()
+    mine = fake / str(os.getpid())
+    mine.mkdir()
+    (mine / "environ").write_bytes(b"A=1\0KITCHEN_UNIT=sw3\0")
+    monkeypatch.setattr(es, "PROC", str(fake))
+    assert es._candidates_proc("sw3")[0][0] == os.getpid()  # the scan does see this process...
+    assert es.sweep("sw3", 0, grace=1) == []  # ...and the sweep refuses to touch it
+
+
+FAKE_PS = """#!/bin/sh
+cat <<'OUT'
+  {pid} {lstart} /usr/bin/sleep 60 PATH=/usr/bin KITCHEN_UNIT=mac1 HOME=/x
+  {pid2} {lstart} /usr/bin/sleep 61 KITCHEN_UNIT=mac10
+  {pid3} {lstart} /usr/bin/sleep 62 X_KITCHEN_UNIT=mac1
+  {pid4} {lstart} /usr/bin/sleep 63 KITCHEN_UNIT=mac1
+  garbage line
+OUT
+"""
+
+
+def test_macos_branch_with_fake_ps(logs, tmp_path, monkeypatch):
+    lstart = "Mon Nov 16 10:00:00 2026"
+    script = tmp_path / "ps"
+    script.write_text(FAKE_PS.format(pid=11, pid2=12, pid3=13, pid4=14, lstart=lstart))
+    script.chmod(0o755)
+    monkeypatch.setattr(es, "PS", str(script))
+    assert es._candidates_ps("mac1") == [(11, "sleep", lstart), (14, "sleep", lstart)]  # exact token only
+    assert es._candidates_ps("mac10") == [(12, "sleep", lstart)]
+
+
+@LINUX_ONLY
+def test_macos_branch_end_to_end_with_fake_ps(logs, tmp_path, monkeypatch):
+    victim = spawn_reaped(["sleep", "60"], start_new_session=True)
+    spare = spawn_reaped(["sleep", "60"], start_new_session=True)
+    try:
+        lstart = es.proc_info(victim.pid)[1]
+        script = tmp_path / "ps"
+        script.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "-E" ]; then\n'
+            f"  echo '{victim.pid} {lstart} /bin/sleep 60 KITCHEN_UNIT=mac2'\n"
+            f"  echo '{spare.pid} {lstart} /bin/sleep 60 KITCHEN_UNIT=mac20'\n"
+            f"  echo '{spare.pid} {lstart} /bin/sleep 60 X_KITCHEN_UNIT=mac2'\n"
+            "else\n"
+            '  exec /bin/ps "$@"\n'
+            "fi\n"
+        )
+        script.chmod(0o755)
+        monkeypatch.setattr(es, "PS", str(script))
+        assert alive(victim.pid)
+        found = es.sweep("mac2", es.parse_lstart(lstart), grace=3, backend=es._candidates_ps)
+        assert [f[0] for f in found] == [victim.pid]
+        assert wait_gone(victim.pid)
+        assert alive(spare.pid)
+        assert f"sweep: pid={victim.pid} comm=sleep" in (logs / "end-mac2.log").read_text()
+    finally:
+        victim.kill()
+        spare.kill()
+
+
+def test_parse_lstart():
+    assert es.parse_lstart("Mon Nov 16 10:00:00 2026") < es.parse_lstart("Mon Nov  16 10:00:01 2026")
+    assert es.parse_lstart("not a date") is None
