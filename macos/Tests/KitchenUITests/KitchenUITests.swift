@@ -24,6 +24,11 @@ private var utc: Calendar {
         #expect(model.isDemo)
     }
 
+    @Test func demoDataShowsTokensAndOneAlert() {
+        #expect(DemoData.snapshot.tokensToday == 1_250_000)
+        #expect(DemoData.snapshot.alerting.map(\.unit) == ["export-csv"])
+    }
+
     @Test func demoDataIsMadeUp() {
         for unit in DemoData.snapshot.units {
             #expect(unit.project == "demo-app")

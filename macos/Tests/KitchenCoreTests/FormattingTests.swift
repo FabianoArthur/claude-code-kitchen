@@ -5,6 +5,14 @@ import Testing
 @Suite struct FormattingTests {
     let now = fixtureNow
 
+    @Test(arguments: [
+        (0, "0"), (850, "850"), (999, "999"), (1000, "1k"), (1830, "1.8k"), (48_210, "48.2k"),
+        (1_250_000, "1.2M"), (1_300_000, "1.3M"), (2_000_000, "2M"),
+    ])
+    func tokensReadLikeThePlugin(_ n: Int, _ text: String) {
+        #expect(Formatting.tokens(n) == text)
+    }
+
     static let resets: [(Double, String)] = [
         (-5, "now"), (0, "now"), (20, "1m"), (300, "5m"), (3540, "59m"),
         (3600, "1h"), (11_400, "3h 10m"), (86_400, "1d"), (189_540, "2d 4h"),

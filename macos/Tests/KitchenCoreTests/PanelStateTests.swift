@@ -117,7 +117,7 @@ private func snapshot(_ json: String) throws -> KitchenSnapshot {
 
     @Test func unitAccessibilityLabel() throws {
         let s = try KitchenSnapshot.decode(Fixture.data("kitchen.json"))
-        #expect(s.units[1].accessibilityLabel == "export-csv, waiting on you, demo-app, 1 hour 12 minutes, PR 43: pick the CSV dialect")
-        #expect(s.units[0].accessibilityLabel == "rate-limit, running, demo-app, 12 minutes")
+        #expect(s.units[1].accessibilityLabel == "export-csv, waiting on you, demo-app, 1 hour 12 minutes, PR 43, 1.8k tokens, alert, waiting too long: pick the CSV dialect")
+        #expect(s.units[0].accessibilityLabel == "rate-limit, running, demo-app, 12 minutes, 48.2k tokens")
     }
 }

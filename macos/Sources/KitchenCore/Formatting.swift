@@ -34,6 +34,18 @@ public enum Formatting {
         return "\(Int(seconds / 86_400))d ago"
     }
 
+    /// "850", "48.2k", "1.3M": same rounding as the SwiftBar plugin.
+    public static func tokens(_ n: Int) -> String {
+        if n < 1000 { return String(n) }
+        if n < 1_000_000 { return trim(Double(n) / 1000, "k") }
+        return trim(Double(n) / 1_000_000, "M")
+    }
+
+    private static func trim(_ value: Double, _ suffix: String) -> String {
+        let text = String(format: "%.1f", value)
+        return (text.hasSuffix(".0") ? String(text.dropLast(2)) : text) + suffix
+    }
+
     /// "62%"; anything above zero but under 1 % reads "<1%" so a used meter never says 0.
     public static func percent(_ value: Double) -> String {
         if value > 0 && value < 1 { return "<1%" }
