@@ -135,11 +135,84 @@ def test_sigkill_after_grace_for_term_ignoring_child(logs):
     assert "sigkill=yes" in (logs / "end-u5.log").read_text()
 
 
+class FakeTmux:
+    """A `tmux` first on PATH that records its arguments."""
+
+    def __init__(self, tmp_path, monkeypatch):
+        bindir = tmp_path / "fakebin"
+        bindir.mkdir()
+        self.calls = tmp_path / "tmux-calls.txt"
+        tmux = bindir / "tmux"
+        tmux.write_text(f'#!/bin/sh\necho "$@" >> "{self.calls}"\nexit 0\n')
+        tmux.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.delenv("KITCHEN_TMUX_SOCKET", raising=False)
+
+    def recorded(self):
+        return self.calls.read_text() if self.calls.exists() else ""
+
+
+@pytest.fixture
+def fake_tmux(tmp_path, monkeypatch):
+    return FakeTmux(tmp_path, monkeypatch)
+
+
 @pytest.mark.parametrize("bad", ["../x", "a/b", ".", "..", ""])
-def test_invalid_id_refused_before_touching_anything(logs, bad):
+def test_invalid_id_never_reaches_tmux_or_the_filesystem(logs, fake_tmux, bad):
+    assert run("end", "ok-id").returncode == 0
+    assert "kill-session -t =kitchen-ok-id" in fake_tmux.recorded()  # positive control
+    before = fake_tmux.recorded()
+    r = run("end", bad)
+    assert r.returncode in (2, 64)
+    if bad:
+        assert r.returncode == 2 and "invalid unit id" in r.stdout  # refused by the id rule
+    assert fake_tmux.recorded() == before
+    assert sorted(p.name for p in logs.iterdir()) == ["end-ok-id.log"]
     assert run("register", bad, "1").returncode in (2, 64)
-    assert run("end", bad).returncode in (2, 64)
-    assert not logs.exists()
+    assert sorted(p.name for p in logs.iterdir()) == ["end-ok-id.log"]
+
+
+def test_registration_path_outside_logs_dir_is_refused(logs, tmp_path, fake_tmux):
+    logs.mkdir()
+    outside = tmp_path / "outside.pid"
+    outside.write_text("untouched")
+    (logs / "u7.pid").symlink_to(outside)
+    p = spawn_reaped(["sleep", "60"])
+    try:
+        r = run("register", "u7", str(p.pid))
+        assert r.returncode == 2 and "outside the logs directory" in r.stdout
+        assert outside.read_text() == "untouched"
+        r = run("end", "u7")
+        assert r.returncode == 2 and "outside the logs directory" in r.stdout
+        assert fake_tmux.recorded() == ""  # tmux was not called
+        assert alive(p.pid)
+        # positive control: the same call with a plain registration file works
+        (logs / "u7.pid").unlink()
+        assert run("register", "u7", str(p.pid)).returncode == 0
+        assert json.loads((logs / "u7.pid").read_text())["pid"] == p.pid
+    finally:
+        p.kill()
+
+
+def test_log_path_symlinked_outside_is_refused(logs, tmp_path, fake_tmux):
+    logs.mkdir()
+    outside = tmp_path / "outside.log"
+    outside.write_text("untouched")
+    (logs / "end-u8.log").symlink_to(outside)
+    r = run("end", "u8")
+    assert r.returncode == 2 and "outside the logs directory" in r.stdout
+    assert outside.read_text() == "untouched"
+    assert fake_tmux.recorded() == ""
+
+
+def test_logs_dir_itself_may_be_a_symlink(tmp_path, monkeypatch, fake_tmux):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    monkeypatch.setenv("KITCHEN_LOGS_DIR", str(link))
+    assert run("end", "u9").returncode == 0
+    assert (real / "end-u9.log").exists()
 
 
 def test_end_kills_tmux_session_and_logs(logs, private_tmux, monkeypatch):
