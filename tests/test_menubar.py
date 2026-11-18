@@ -1067,8 +1067,14 @@ def test_main_json_includes_tokens_fields(mod, monkeypatch, tmp_path, capsys):
 
 def _alert_model(mod, cfg, tmp_path):
     """The English manifest: `export-csv` is the waiting row, `rate-limit` is running (live)."""
-    return _json_model(mod, cfg, tmp_path,
-                       sessions=[("kitchen-rate-limit", int(NOW) - 60, str(tmp_path))])
+    cfg, model = _json_model(mod, cfg, tmp_path,
+                             sessions=[("kitchen-rate-limit", int(NOW) - 60, str(tmp_path))])
+    # NOW is frozen at import time but the manifest is written (real mtime) when the test runs.
+    # On a slow run the mtime drifts past NOW and shortens every wait, so pin it to NOW.
+    for e in model["entries"]:
+        if e["mtime"] is not None:
+            e["mtime"] = NOW
+    return cfg, model
 
 
 def _recording_run(calls, returncode=0):
