@@ -11,8 +11,14 @@ Safety: the registered pid is only trusted if its command name and start time st
 what was recorded. A recycled pid means the tree is someone else's: exit 2, nothing is
 killed (the tmux session is still ended, it is named after the unit).
 
-Known limit: a double-forked orphan is adopted by launchd (macOS has no subreaper) and
-leaves the tree by ppid; it is not found here.
+A double-forked orphan leaves the tree by ppid (launchd or init adopts it), so after the
+kill a best-effort sweep looks for it by environment: every process of the same uid, started
+at or after the registered start time, with exactly KITCHEN_UNIT=<ID> in its environment
+(Linux: /proc/<pid>/environ; macOS: `ps -E`) gets SIGTERM, a grace period, then SIGKILL.
+Each hit is logged as `sweep`. Never the script itself or its ancestors.
+
+Known limit: a process started with `env -i` (or one that scrubbed KITCHEN_UNIT) carries no
+mark and is not found.
 
 Usage:
     python3 end_session.py register <ID> <PID>
@@ -35,6 +41,7 @@ import threading
 import time
 
 PS = "/bin/ps"
+PROC = "/proc"
 GRACE_SECONDS = 5.0
 EXIT_OK = 0
 EXIT_REFUSED = 2
@@ -182,6 +189,105 @@ def _pid_alive(pid):
         return True
 
 
+def _running(pid):
+    """Alive and not a zombie."""
+    r = _ps("-o", "stat=", "-p", str(int(pid)))
+    stat = r.stdout.strip()
+    return r.returncode == 0 and bool(stat) and not stat.startswith("Z")
+
+
+def parse_lstart(text):
+    """Epoch seconds of a `ps` lstart string (C locale), or None."""
+    try:
+        return time.mktime(time.strptime(" ".join(text.split()), "%a %b %d %H:%M:%S %Y"))
+    except (ValueError, OverflowError):
+        return None
+
+
+def _ancestors(pid, table):
+    found = set()
+    while pid in table and table[pid][0] > 0 and table[pid][0] not in found:
+        pid = table[pid][0]
+        found.add(pid)
+    return found
+
+
+def _candidates_proc(unit_id):
+    """[(pid, comm, lstart)] of own-uid processes with KITCHEN_UNIT=<id> in /proc/<pid>/environ."""
+    needle = f"KITCHEN_UNIT={unit_id}".encode()
+    hits = []
+    try:
+        names = os.listdir(PROC)
+    except OSError:
+        return hits
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            if os.stat(os.path.join(PROC, name)).st_uid != os.getuid():
+                continue
+            with open(os.path.join(PROC, name, "environ"), "rb") as f:
+                entries = f.read().split(b"\0")
+        except OSError:
+            continue  # gone or not readable: next pid
+        if needle in entries:
+            info = proc_info(int(name))
+            if info:
+                hits.append((int(name), info[0], info[1]))
+    return hits
+
+
+PS_ROW_RE = re.compile(r"^\s*(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.*)$")
+
+
+def _candidates_ps(unit_id):
+    """Same as _candidates_proc through `ps -E`, which appends the environment to the command."""
+    needle = f"KITCHEN_UNIT={unit_id}"
+    hits = []
+    r = _ps("-E", "-ww", "-U", str(os.getuid()), "-o", "pid=,lstart=,command=")
+    for line in r.stdout.splitlines():
+        m = PS_ROW_RE.match(line)
+        if not m:
+            continue
+        tokens = m.group(3).split()
+        if needle in tokens:  # whole token: KITCHEN_UNIT=<id>0 and X_KITCHEN_UNIT=<id> do not match
+            hits.append((int(m.group(1)), os.path.basename(tokens[0]), " ".join(m.group(2).split())))
+    return hits
+
+
+def sweep(unit_id, since, grace=GRACE_SECONDS, backend=None):
+    """Best effort: end leftover processes marked KITCHEN_UNIT=<id> that started at or after `since`.
+
+    Returns the list of (pid, comm, lstart) found. Logs one `sweep` line per hit, none when empty.
+    """
+    if backend is None:
+        backend = _candidates_proc if sys.platform.startswith("linux") else _candidates_ps
+    try:
+        table = process_table()
+        skip = {os.getpid()} | _ancestors(os.getpid(), table)
+        found = []
+        for pid, comm, lstart in backend(unit_id):
+            started = parse_lstart(lstart)
+            if pid in skip or started is None or started < since:
+                continue
+            found.append((pid, comm, lstart))
+    except Exception as e:  # best effort: never break the end of a unit
+        log(unit_id, f"sweep: skipped ({type(e).__name__})")
+        return []
+    if not found:
+        return []
+    pids = [f[0] for f in found]
+    _signal_all([], pids, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline and any(_running(p) for p in pids):
+        time.sleep(0.1)
+    forced = {p for p in pids if _running(p)}
+    _signal_all([], forced, signal.SIGKILL)
+    for pid, comm, lstart in found:
+        log(unit_id, f"sweep: pid={pid} comm={comm} lstart={lstart} sigkill={'yes' if pid in forced else 'no'}")
+    return found
+
+
 def kill_tmux(unit_id):
     cmd = ["tmux"]
     if os.environ.get("KITCHEN_TMUX_SOCKET"):
@@ -234,6 +340,9 @@ def end(unit_id, grace=GRACE_SECONDS):
             log(unit_id, f"killed tree of pid {reg_pid}: pgids={pgids} loose={loose} "
                          f"sigkill={'yes' if forced else 'no'}")
         if rc == EXIT_OK:
+            since = parse_lstart(reg.get("lstart") or "")
+            if since is not None:
+                sweep(unit_id, since, grace)
             try:
                 os.remove(path)
             except OSError:
