@@ -13,6 +13,8 @@ User config keys read here: `bases` (protected branches), `protected_scripts` (s
 the unit must never run) and `heavy_patterns` (regexes of commands that must go through
 heavy.py). Both lists are empty by default.
 """
+import fnmatch
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -486,6 +488,7 @@ def _redirect_targets(words: list):
 
 
 def _write_check(tool: str, tool_input: dict, config: dict) -> Optional[str]:
+    unit_files = _unit_files(config)  # the unit's own task document and manifest are not "outside"
     if tool in SHELL_TOOLS:
         for words, base in _bases(_command(tool_input), config):
             for target in _redirect_targets(words):
@@ -494,14 +497,370 @@ def _write_check(tool: str, tool_input: dict, config: dict) -> Optional[str]:
                     if _expand(target, config) is None:
                         continue  # an unknown variable is not provably outside
                     return f"write to a relative path after an unknown cd ({target[:60]})"
-                if _outside(resolved[0], config):
+                if _outside(resolved[0], config) and _lower(resolved[0]) not in unit_files:
                     return f"write outside the worktree ({resolved[0]})"
         return None
     for path in _real_tool_paths(tool_input, config):
         if path is None:
             return "path with an unresolved variable"
-        if _outside(path, config):
+        if _outside(path, config) and _lower(path) not in unit_files:
             return f"write outside the worktree ({path})"
+    return None
+
+
+# --- unit snapshot ---------------------------------------------------------------------------
+
+UNIT_ID = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def _snapshot(config: dict) -> dict:
+    """The unit's snapshot (written by the waiter at dispatch), or {} when absent or invalid.
+
+    What the unit may do beyond the default (`allow_config`, `task_doc`, `manifest`) is read only
+    from here: never from the task document, which the unit edits, nor from `kitchen-guard.json`.
+    """
+    env = _env(config)
+    unit = env.get("KITCHEN_UNIT") or ""
+    if not UNIT_ID.fullmatch(unit) or unit in (".", ".."):
+        return {}
+    directory = env.get("KITCHEN_UNITS_DIR") or os.path.join(_home(config), ".claude", "kitchen-units")
+    try:
+        with open(os.path.join(directory, unit + ".json"), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("schema") != 1 or data.get("unit") != unit:
+        return {}
+    return data
+
+
+def _lower(path: str) -> str:
+    """Comparison form of a real path: the default macOS volume ignores case."""
+    return os.path.normcase(path).replace("\\", "/").rstrip("/").lower()
+
+
+def _unit_files(config: dict) -> set:
+    """The task document and the manifest: the unit writes its own Outcome and manifest row there."""
+    snapshot = _snapshot(config)
+    return {_lower(_real(snapshot[k])) for k in ("task_doc", "manifest") if isinstance(snapshot.get(k), str)}
+
+
+# --- publishing ------------------------------------------------------------------------------
+# Pushing and opening a PR belong to the waiter, after the unit is done and checked. The guard
+# reads text only, so it cannot know where `git push` would go: every push is denied, public or
+# private repository, and `publish_allow` in kitchen-guard.json is not read at all.
+
+GH_OPTS_WITH_VALUE = frozenset({"-R", "--repo", "--hostname"})
+GH_WRITE_GROUPS = frozenset({"release", "repo", "issue", "gist"})
+GH_READ_VERBS = frozenset({"view", "list", "ls", "status", "download", "clone", "diff", "checks"})
+
+
+def _gh_args(words: list):
+    """(group, args) of a `gh` command, skipping global options such as `-R owner/name`."""
+    if os.path.basename(words[0]) != "gh":
+        return None, []
+    rest, i = words[1:], 0
+    while i < len(rest) and rest[i].startswith("-"):
+        i += 2 if rest[i] in GH_OPTS_WITH_VALUE else 1
+    return (rest[i], rest[i + 1 :]) if i < len(rest) else (None, [])
+
+
+def _first_positional(args: list):
+    i = 0
+    while i < len(args):
+        if args[i] in GH_OPTS_WITH_VALUE:
+            i += 2
+        elif args[i].startswith("-"):
+            i += 1
+        else:
+            return args[i]
+    return None
+
+
+def _gh_api_method(args: list) -> str:
+    """The HTTP method `gh api` would use: the explicit one, else POST when it sends fields."""
+    method, fields = None, False
+    for i, arg in enumerate(args):
+        if arg in ("-X", "--method") and i + 1 < len(args):
+            method = args[i + 1]
+        elif arg.startswith("--method="):
+            method = arg.split("=", 1)[1]
+        elif re.fullmatch(r"-X.+", arg):
+            method = arg[2:]
+        elif arg in ("-f", "-F", "--field", "--raw-field", "--input") or re.match(
+            r"(--(field|raw-field|input)=|-[fF].)", arg
+        ):
+            fields = True
+    return (method or ("POST" if fields else "GET")).upper()
+
+
+def _publish_check(tool: str, tool_input: dict, config: dict) -> Optional[str]:
+    for words in _commands(_command(tool_input)):
+        sub, _args = _git_args(words)
+        if sub == "push":
+            return "git push: only the waiter publishes, after the unit is done"
+        group, args = _gh_args(words)
+        verb = _first_positional(args)
+        if group == "pr" and verb == "create":
+            return "gh pr create: only the waiter opens the pull request"
+        if group in GH_WRITE_GROUPS and verb is not None and verb not in GH_READ_VERBS:
+            return f"gh {group} {verb} writes to the remote"
+        if group == "api" and _gh_api_method(args) != "GET":
+            return f"gh api with method {_gh_api_method(args)} writes to the remote"
+    return None
+
+
+# --- protected configuration -----------------------------------------------------------------
+# The files that define what a unit may do: the unit must not edit its own fence. `allow_config`
+# in the unit's snapshot frees only the worktree's own `.claude/settings*.json` and `.mcp.json`.
+# Residual risk: an interpreter one-liner (`python -c "open(...)"`) can still write anywhere the
+# unit's own OS permissions allow; this rule reads file tools, redirects and common commands.
+
+PROTECTED_NAMES = frozenset({"kitchen-guard.json", "kitchen-mcp.json", ".kitchen-limit"})
+PROTECTED_HOME_DIRS = ("kitchen-units", "kitchen-logs", "kitchen-runs")
+GUARD_SCRIPTS = ("guard.py", "guard_rules.py")
+KNOWN_NAMES = (
+    ("settings.json", "settings.local.json", ".mcp.json", ".kitchen")
+    + tuple(PROTECTED_NAMES)
+    + PROTECTED_HOME_DIRS
+    + GUARD_SCRIPTS
+)
+# the only keys a freed settings file may carry: they cannot run code outside the guard
+SETTINGS_KEYS = {"$schema": None, "permissions": frozenset({"allow", "ask", "deny"})}
+# commands that change the files they name
+WRITE_ALL = frozenset(
+    {"mv", "rm", "rmdir", "unlink", "touch", "chmod", "chown", "chgrp", "truncate", "patch", "mkdir"}
+)
+WRITE_LAST = frozenset({"cp", "install", "rsync", "ln"})  # the last operand (or -t dir) is written
+
+
+def _config_kind(path: str, config: dict):
+    """(reason, freed_by_allow_config, is_settings) when a real path is protected, else None."""
+    key = _lower(path)
+    parent, _, name = key.rpartition("/")
+    worktree = _lower(_worktree(config))
+    home_claude = _lower(_real(os.path.join(_home(config), ".claude")))
+    if fnmatch.fnmatchcase(name, "settings*.json") and parent.rpartition("/")[2] == ".claude":
+        if parent == home_claude:
+            return "the user's Claude settings", False, True
+        return "a Claude settings file", parent == worktree + "/.claude", True
+    if name == ".mcp.json":
+        return "an MCP config file", parent == worktree, False
+    if name in PROTECTED_NAMES:
+        return f"{name}, which defines the kitchen's limits", False, False
+    env = _env(config)
+    guarded = [home_claude + "/" + d for d in PROTECTED_HOME_DIRS]
+    guarded += [_lower(_real(env[v])) for v in ("KITCHEN_UNITS_DIR", "KITCHEN_LOG_DIR") if env.get(v)]
+    if any(_inside(key, root) for root in guarded):
+        return "the kitchen's own state (units, logs, runs)", False, False
+    if env.get("KITCHEN_GUARD_CONFIG") and key == _lower(_real(env["KITCHEN_GUARD_CONFIG"])):
+        return "the guard config", False, False
+    if _inside(key, worktree + "/.kitchen") and key != worktree + "/.kitchen/done":
+        return "the unit's .kitchen folder (only `done` is writable)", False, False
+    here = os.path.dirname(os.path.realpath(__file__))
+    if key in {_lower(_real(os.path.join(here, n))) for n in GUARD_SCRIPTS}:
+        return "an installed guard script", False, False
+    return None
+
+
+def _apply_edit(text: str, old, new, replace_all) -> str:
+    if not isinstance(old, str) or not isinstance(new, str) or old not in text:
+        raise ValueError("edit does not apply")
+    return text.replace(old, new) if replace_all else text.replace(old, new, 1)
+
+
+def _settings_keys_denial(tool: str, tool_input: dict, path: str) -> Optional[str]:
+    """Builds the settings JSON a Write/Edit would leave and checks its keys; None when it is fine."""
+    try:
+        if tool == "Write":
+            text = tool_input.get("content")
+        else:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+            if tool == "Edit":
+                text = _apply_edit(
+                    text, tool_input.get("old_string"), tool_input.get("new_string"), tool_input.get("replace_all")
+                )
+            elif tool == "MultiEdit":
+                for edit in tool_input.get("edits") or []:
+                    text = _apply_edit(text, edit.get("old_string"), edit.get("new_string"), edit.get("replace_all"))
+            else:
+                raise ValueError("unsupported tool")
+        data = json.loads(text)
+    except (OSError, ValueError, AttributeError, TypeError):
+        return "the resulting settings file cannot be checked"
+    if not isinstance(data, dict):
+        return "the resulting settings file is not a JSON object"
+    for key, value in data.items():
+        if key not in SETTINGS_KEYS:
+            return f"settings key `{key}` is not on the allowed list"
+        allowed = SETTINGS_KEYS[key]
+        if allowed is not None and (not isinstance(value, dict) or set(value) - allowed):
+            return f"settings key `{key}` carries entries that are not on the allowed list"
+    return None
+
+
+def _config_denial(path: str, config: dict, tool: str, tool_input: dict) -> Optional[str]:
+    kind = _config_kind(path, config)
+    if kind is None:
+        return None
+    reason, freeable, settings = kind
+    if freeable and _snapshot(config).get("allow_config") is True:
+        if not settings:
+            return None
+        if tool in SHELL_TOOLS:
+            return f"write to {reason} from the shell (only the file tools may edit settings)"
+        return _settings_keys_denial(tool, tool_input, path)
+    return f"write to {reason} ({path})"
+
+
+def _written_words(words: list):
+    """(word, source basenames) for every path a simple command writes; sources help with `cp x dir/`."""
+    yield from ((w, []) for w in _redirect_targets(words))
+    name, args = os.path.basename(words[0]), words[1:]
+    if name in ("sed", "perl") and (
+        "i" in _short_flags(args) or any(a.startswith(("-i", "--in-place")) for a in args)
+    ):
+        name = "mv"  # in-place edit: every file operand is rewritten
+    if name == "dd":
+        yield from ((a[3:], []) for a in args if a.startswith("of="))
+        return
+    operands = [a for a in args if not a.startswith("-")]
+    if name in WRITE_ALL:
+        yield from ((a, []) for a in operands)
+    elif name in WRITE_LAST and operands:
+        target = args[args.index("-t") + 1] if "-t" in args[:-1] else None
+        target = target or next((a.split("=", 1)[1] for a in args if a.startswith("--target-directory=")), None)
+        if target:
+            yield target, [os.path.basename(a) for a in operands]
+        else:
+            yield operands[-1], [os.path.basename(a) for a in operands[:-1]]
+
+
+def _target_paths(word: str, sources: list, base, config: dict) -> list:
+    resolved = _resolve(word, base, config)
+    if resolved is None:
+        return []
+    path, wildcard = resolved
+    paths = [path]
+    expanded = _expand(word, config) or word
+    if wildcard:  # `~/.claude/settings*.json`: try the protected names the pattern could match
+        head = expanded[: re.search(r"[*?\[]", expanded).start()].rpartition("/")[0]
+        component = expanded[len(head) :].lstrip("/").split("/")[0]
+        # a shell glob does not match a leading dot unless the pattern spells it
+        hidden_ok = component.startswith(".")
+        bare = not re.sub(r"[*?\[\]]", "", component)  # `*` alone: only what already exists is hit
+        paths += [
+            _real(path + "/" + n)
+            for n in KNOWN_NAMES
+            if fnmatch.fnmatchcase(n, component)
+            and (hidden_ok or not n.startswith("."))
+            and (not bare or os.path.lexists(path + "/" + n))
+        ]
+    if sources and (word.endswith("/") or os.path.isdir(path)):  # `cp settings.json ~/.claude/`
+        paths += [_real(path + "/" + s) for s in sources]
+    return paths
+
+
+def _config_check(tool: str, tool_input: dict, config: dict) -> Optional[str]:
+    if tool in SHELL_TOOLS:
+        for words, base in _bases(_command(tool_input), config):
+            for word, sources in _written_words(words):
+                for path in _target_paths(word, sources, base, config):
+                    reason = _config_denial(path, config, tool, tool_input)
+                    if reason:
+                        return reason
+        return None
+    for path in _real_tool_paths(tool_input, config):
+        reason = _config_denial(path, config, tool, tool_input) if path else None  # no path: write-outside
+        if reason:
+            return reason
+    return None
+
+
+# --- uploads ---------------------------------------------------------------------------------
+# Sending local files to a remote host is the way out for source code and secrets.
+
+CURL_SHORT_WITH_VALUE = frozenset("AbcCdDeEFHKmoPQrtTuUwxXyYz")
+CURL_DATA_LONG = frozenset({"--data", "--data-binary", "--data-ascii", "--json"})
+LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+REMOTE_SPEC = re.compile(r"(?:[\w.+-]+@)?(?:\[[0-9A-Fa-f:.]+\]|[\w.-]+):")
+
+
+def _curl_form_reads_file(value: str) -> bool:
+    return bool(re.search(r"=[@<]|^[@<]", value))
+
+
+def _curl_upload(args: list) -> Optional[str]:
+    for i, arg in enumerate(args):
+        following = args[i + 1] if i + 1 < len(args) else ""
+        if arg.startswith("--"):
+            option, equals, value = arg.partition("=")
+            value = value if equals else following
+            if option in CURL_DATA_LONG and value.startswith("@"):
+                return f"curl {option} @file uploads a local file"
+            if option == "--data-urlencode" and re.match(r"[^=]*@", value):
+                return "curl --data-urlencode with a file uploads a local file"
+            if option == "--upload-file":
+                return "curl --upload-file uploads a local file"
+            if option == "--form" and _curl_form_reads_file(value):
+                return "curl --form with a file uploads a local file"
+        elif arg.startswith("-") and len(arg) > 1:
+            for j, letter in enumerate(arg[1:], 1):
+                if letter in CURL_SHORT_WITH_VALUE:
+                    value = arg[j + 1 :] or following
+                    if letter == "d" and value.startswith("@"):
+                        return "curl -d @file uploads a local file"
+                    if letter == "T":
+                        return "curl -T uploads a local file"
+                    if letter == "F" and _curl_form_reads_file(value):
+                        return "curl -F with a file uploads a local file"
+                    break
+    return None
+
+
+def _wget_upload(args: list) -> Optional[str]:
+    for arg in args:  # wget's short -d and -T mean debug and timeout: only the long forms count
+        option = arg.split("=", 1)[0]
+        if option in ("--post-file", "--body-file"):
+            return f"wget {option} uploads a local file"
+    return None
+
+
+def _nc_remote(args: list) -> Optional[str]:
+    hosts = [a for a in args if not a.startswith("-") and not a.isdigit() and a not in LOOPBACK]
+    return f"netcat to a remote host ({hosts[0][:60]})" if hosts else None
+
+
+def _is_remote(arg: str) -> bool:
+    if arg.startswith("-"):
+        return False
+    if re.match(r"(?:scp|sftp|rsync|ssh)://", arg):
+        return True
+    return "/" not in arg.split(":", 1)[0] and bool(REMOTE_SPEC.match(arg))
+
+
+def _egress(words: list) -> Optional[str]:
+    name, args = os.path.basename(words[0]), words[1:]
+    if name == "curl":
+        return _curl_upload(args)
+    if name == "wget":
+        return _wget_upload(args)
+    if name in ("nc", "ncat", "netcat"):
+        return _nc_remote(args)
+    if name in ("scp", "rsync"):
+        remote = next((a for a in args if _is_remote(a)), None)
+        return f"{name} to a remote host ({remote[:60]})" if remote else None
+    if name == "sftp":
+        return "sftp talks to a remote host"
+    return None
+
+
+def _egress_check(tool: str, tool_input: dict, config: dict) -> Optional[str]:
+    for words in _commands(_command(tool_input)):
+        reason = _egress(words)
+        if reason:
+            return reason
     return None
 
 
@@ -601,6 +960,8 @@ RULES = (
         ),
     ),
     Rule("push", True, _push_check),
+    Rule("publish", True, _publish_check),
+    Rule("egress-upload", True, _egress_check),
     Rule("secret-read", True, _secret_check, SHELL_TOOLS | READ_TOOLS | WRITE_TOOLS),
     Rule("env-dump", True, _env_check),
     Rule("no-verify", False, _git_check(_no_verify)),
@@ -608,6 +969,7 @@ RULES = (
     Rule("clean-force", True, _git_check(_clean_force)),
     Rule("rm-outside", True, _rm_check),
     Rule("sql-destructive", True, _sql_check),
+    Rule("config-protected", True, _config_check, SHELL_TOOLS | WRITE_TOOLS),
     Rule("write-outside", True, _write_check, SHELL_TOOLS | WRITE_TOOLS),
     Rule("watch", False, _watch_check),
     Rule("protected-script", True, _protected_check),
