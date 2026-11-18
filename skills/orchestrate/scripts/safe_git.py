@@ -42,6 +42,27 @@ Limits: the check and the command are two git invocations, so a unit that rewrit
 config in between wins the race; the per-call lock belongs to the callers. This module
 narrows the window, it is not a sandbox against a malicious unit.
 
+Submodules and nested repositories: a repository inside the worktree (`git init sub`, then
+`git add sub` makes a gitlink) makes `git status` and `git diff` start a child git inside
+`sub`, which reads the config of `sub`, which nobody checked; a `filter.x.clean` there runs
+as the waiter. So every git of this module carries `submodule.recurse=false`,
+`diff.ignoreSubmodules=all`, `status.submoduleSummary=false`, `fetch.recurseSubmodules=false`
+and `protocol.file.allow=never` (`FILE_PROTOCOL`; tests with a local origin swap it for
+`always`), and `status`/`diff` get `--ignore-submodules=all`. After the config check,
+`check()` also refuses (on every call) when:
+
+  4. `ls-files -s -z` of the worktree, or `ls-tree -r -z <sha>` of the sha the call
+     received, has mode 160000 (a gitlink);
+  5. a `.git` (folder, `gitdir:` file or symlink) exists below the root of a tree, found by
+     `os.walk` without following symlinks and without running git. Names are compared
+     casefolded and without the code points HFS+ ignores. Only the root `.git` is skipped
+     and, in the main clone, the registered worktrees;
+  6. `<git-common-dir>/objects/info/alternates` exists.
+
+Output that a program reads uses `-z`, paths go after `--`, and whatever is shown to a
+human goes through `ascii()`. The list of changed paths comes from `diff_tree()`
+(plumbing, which shows a gitlink; porcelain `diff` hides it).
+
 Usage:
     python3 safe_git.py init                                         create ~/.claude/kitchen-git
     python3 safe_git.py check <clone> [<worktree>] [--url <url>]     exit 0 ok, 7 refused
@@ -63,6 +84,9 @@ GH_BIN = "gh"
 FETCH_SPEC = "+refs/heads/*:refs/remotes/origin/*"
 # The waiter never runs ssh. Tests with a local origin swap this with monkeypatch.
 URL_SCHEMES = ("https://",)
+# `never` also blocks fetch and push to a local origin: tests with a bare local origin
+# swap it for "always" with monkeypatch.
+FILE_PROTOCOL = "never"
 # Subcommands that talk to a remote and therefore need the explicit url.
 URL_COMMANDS = {"fetch", "ls-remote", "push", "remote"}
 CREDENTIAL_KEY = "credential.https://github.com.helper"
@@ -79,6 +103,12 @@ ALLOWED_KEY = re.compile(
 
 # Flags on every git the waiter runs on a unit's tree.
 SAFE_FLAGS = ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
+# Subcommands that take --ignore-submodules.
+SUBMODULE_AWARE = {"status", "diff"}
+# Code points that HFS+ ignores when it compares names (`.g\u200cit` is `.git` there).
+HFS_IGNORED = dict.fromkeys(
+    [0x200C, 0x200D, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+     0x206A, 0x206B, 0x206C, 0x206D, 0x206E, 0x206F, 0xFEFF])
 # Subcommands that can run an external diff driver or a textconv filter.
 DIFFING = {"diff", "log", "show"}
 # The minimal environment: these names, LC_* and KITCHEN_*. Nothing else is inherited.
@@ -93,6 +123,16 @@ class GitRefused(Exception):
 
     def __init__(self, reason):
         super().__init__(ascii(str(reason))[1:-1])
+
+
+def _flags():
+    """Flags on every git of this module. Read at call time: FILE_PROTOCOL can be patched."""
+    return [*SAFE_FLAGS,
+            "-c", "submodule.recurse=false",
+            "-c", "diff.ignoreSubmodules=all",
+            "-c", "status.submoduleSummary=false",
+            "-c", "fetch.recurseSubmodules=false",
+            "-c", f"protocol.file.allow={FILE_PROTOCOL}"]
 
 
 def _kitchen_dir():
@@ -188,7 +228,7 @@ def _validate_kitchen():
         raise GitRefused(f"xdg folder {xdg} is not empty")
     cfg = base / "gitconfig"
     _owned(cfg, _lstat(cfg, "gitconfig", False), 0o600, "gitconfig")
-    res = _run([GIT_BIN, "config", "--file", str(cfg), "--list", "-z"])
+    res = _run([GIT_BIN, *_flags(), "config", "--file", str(cfg), "--list", "-z"])
     helpers = []
     for key, value in _entries(res, str(cfg)):
         if key.lower() == CREDENTIAL_KEY:
@@ -222,7 +262,7 @@ def init():
 
 def _read(directory, *args):
     """Pre-check read (rev-parse / config only). Returns the completed process."""
-    return _exec([GIT_BIN, *SAFE_FLAGS, "-C", str(directory), *args])
+    return _exec([GIT_BIN, *_flags(), "-C", str(directory), *args])
 
 
 def _dir_of(directory, what):
@@ -255,8 +295,8 @@ def _values(directory, key):
     return res.stdout.split("\n")[:-1] if res.stdout else []
 
 
-def check(clone, worktree=None, url=None):
-    """Raise GitRefused unless the config and the object store of the tree are trusted."""
+def check(clone, worktree=None, url=None, sha=None):
+    """Raise GitRefused unless the config, the object store and the tree layout are trusted."""
     if url is not None and not url.startswith(URL_SCHEMES):
         raise GitRefused(f"url scheme not allowed: {url!r} (only {', '.join(URL_SCHEMES)})")
     _validate_kitchen()
@@ -276,7 +316,7 @@ def check(clone, worktree=None, url=None):
         for folder in (git_dir, common):
             cfg = folder / "config.worktree"
             if cfg.exists():
-                res = _exec([GIT_BIN, *SAFE_FLAGS, "config", "--file", str(cfg), "--list", "-z"])
+                res = _exec([GIT_BIN, *_flags(), "config", "--file", str(cfg), "--list", "-z"])
                 sources.append((str(cfg), _entries(res, str(cfg))))
     for label, entries in sources:
         for key, value in entries:
@@ -296,9 +336,76 @@ def check(clone, worktree=None, url=None):
     for name in ("info/grafts", "shallow"):
         if (common / name).exists():
             raise GitRefused(f"{name} exists in {common}")
+    _check_no_nested(clone, trees, common, sha)
 
 
-def git(clone, worktree, *args, url=None):
+def _stdout(directory, *args):
+    res = _read(directory, *args)
+    if res.returncode != 0:
+        raise GitRefused(f"git {args[0]} failed in {directory} (rc {res.returncode})")
+    return res.stdout
+
+
+def _has_gitlink(listing):
+    """True when a `-z` listing of `ls-files -s` or `ls-tree` has an entry of mode 160000."""
+    return any(chunk.split(" ", 1)[0] == "160000" for chunk in listing.split("\0") if chunk)
+
+
+def _is_dot_git(name):
+    return name.casefold().translate(HFS_IGNORED) == ".git"
+
+
+def _registered_worktrees(common):
+    """Roots of the worktrees registered in the common dir, read from files, without git."""
+    roots = set()
+    admin = common / "worktrees"
+    if not admin.is_dir():
+        return roots
+    for entry in admin.iterdir():
+        try:
+            text = (entry / "gitdir").read_text(encoding="utf-8", errors="surrogateescape")
+        except OSError:
+            continue
+        line = text.strip()
+        if line:
+            roots.add(os.path.realpath(os.path.dirname(line)))
+    return roots
+
+
+def _walk_for_dot_git(root, skip):
+    """Refuse a `.git` below `root`. The root `.git` and the `skip` roots are not entered."""
+    def fail(exc):
+        raise GitRefused(f"cannot walk {root}: {exc}")
+
+    root = str(root)
+    for here, dirs, files in os.walk(root, followlinks=False, onerror=fail):
+        at_root = here == root
+        # Symlinks to folders are listed in `dirs` (and not followed): the name check sees them.
+        names = [n for n in dirs + files if not (at_root and n == ".git")]
+        for name in names:
+            if _is_dot_git(name):
+                raise GitRefused(f"nested .git below the root of {root}: "
+                                 f"{os.path.join(here, name)}")
+        dirs[:] = [d for d in dirs if not (at_root and d == ".git")
+                   and os.path.realpath(os.path.join(here, d)) not in skip]
+
+
+def _check_no_nested(clone, trees, common, sha):
+    """Gitlinks, a `.git` below a root, and `alternates` are refusals (rules 4 to 6)."""
+    for tree in trees:
+        if _has_gitlink(_stdout(tree, "ls-files", "-s", "-z")):
+            raise GitRefused(f"gitlink (mode 160000) in the index of {tree}")
+    if sha is not None and _has_gitlink(_stdout(trees[-1], "ls-tree", "-r", "-z", sha)):
+        raise GitRefused(f"gitlink (mode 160000) in tree {sha}")
+    main = os.path.realpath(clone)
+    for tree in trees:
+        skip = _registered_worktrees(common) if os.path.realpath(tree) == main else set()
+        _walk_for_dot_git(tree, skip)
+    if os.path.lexists(common / "objects" / "info" / "alternates"):
+        raise GitRefused(f"objects/info/alternates exists in {common}")
+
+
+def git(clone, worktree, *args, url=None, sha=None):
     """Check the tree, then run git with the safe flags in the worktree (or the clone)."""
     args = list(args)
     sub = args[0] if args else None
@@ -309,18 +416,54 @@ def git(clone, worktree, *args, url=None):
             raise GitRefused("git fetch with --tags or -t is not allowed")
         if "--no-tags" not in args:
             args.insert(1, "--no-tags")
-    check(clone, worktree, url=url)
+    check(clone, worktree, url=url, sha=sha)
     if args and args[0] in DIFFING:
         args[1:1] = ["--no-ext-diff", "--no-textconv"]
+    if sub in SUBMODULE_AWARE and "--ignore-submodules=all" not in args:
+        args.insert(1, "--ignore-submodules=all")
     cwd = worktree if worktree is not None else clone
-    return _exec([GIT_BIN, *SAFE_FLAGS, "-C", str(cwd), *args])
+    return _exec([GIT_BIN, *_flags(), "-C", str(cwd), *args])
 
 
 def status_porcelain(clone, worktree=None):
     """`git status --porcelain -z` entries. A failing git is a refusal, never a clean tree."""
-    res = git(clone, worktree, "status", "--porcelain", "-z", "--ignore-submodules=all")
+    res = git(clone, worktree, "status", "--porcelain", "-z")
     if res.returncode != 0:
         raise GitRefused(f"git status failed in {worktree or clone} (rc {res.returncode})")
+    return [e for e in res.stdout.split("\0") if e]
+
+
+def diff_tree(clone, worktree, base, sha):
+    """Changed paths from `diff-tree -r --raw -z --no-renames <base> <sha>`.
+
+    Returns (old_mode, new_mode, status, path) tuples; a gitlink shows as mode 160000.
+    Plumbing on purpose: the porcelain `diff` hides submodules. Show paths with ascii().
+    """
+    res = git(clone, worktree, "diff-tree", "-r", "--raw", "-z", "--no-renames", base, sha,
+              "--", sha=sha)
+    if res.returncode != 0:
+        raise GitRefused(f"git diff-tree failed in {worktree or clone} (rc {res.returncode})")
+    parts = res.stdout.split("\0")
+    out = []
+    i = 0
+    while i + 1 < len(parts):
+        if not parts[i].startswith(":"):
+            i += 1
+            continue
+        old_mode, new_mode, _old, _new, status = parts[i][1:].split(" ")
+        out.append((old_mode, new_mode, status, parts[i + 1]))
+        i += 2
+    return out
+
+
+def ls_files(clone, worktree, *paths):
+    """Tracked paths (`ls-files -z`), restricted to `paths`, which go after `--`."""
+    args = ["ls-files", "-z"]
+    if paths:
+        args += ["--", *paths]
+    res = git(clone, worktree, *args)
+    if res.returncode != 0:
+        raise GitRefused(f"git ls-files failed in {worktree or clone} (rc {res.returncode})")
     return [e for e in res.stdout.split("\0") if e]
 
 
@@ -371,6 +514,13 @@ def selftest():
             msg = refused(git, clone, wt, "fetch", "--tags", "origin",
                           url="https://example.com/r.git")
             case("fetch --tags refused", msg is not None and "--tags" in msg)
+            case("submodule flags on", "protocol.file.allow=never" in " ".join(_flags()))
+            (wt / "sub").mkdir()
+            (wt / "sub" / ".git").write_text("gitdir: /outside\n", encoding="utf-8")
+            msg = refused(check, clone, wt)
+            case("nested .git refused", msg is not None and "nested .git" in msg)
+            (wt / "sub" / ".git").unlink()
+            case("tree passes again", refused(check, clone, wt) is None)
             plain("config", "core.askpass", "/bin/true", cwd=clone)
             msg = refused(check, clone, wt)
             case("core.askpass refused by name", msg is not None and "core.askpass" in msg)

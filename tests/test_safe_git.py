@@ -49,8 +49,9 @@ def kitchen_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def local_urls(monkeypatch):
-    """Tests whose origin is a local path accept any url scheme."""
+    """Tests whose origin is a local path accept any url scheme and the file protocol."""
     monkeypatch.setattr(safe_git, "URL_SCHEMES", ("",))
+    monkeypatch.setattr(safe_git, "FILE_PROTOCOL", "always")
 
 
 @pytest.fixture
@@ -632,6 +633,258 @@ def test_non_https_url_is_refused_by_scheme(repo, tmp_path, monkeypatch, url):
         safe_git.git(clone, wt, "fetch", "origin", url=url)
     assert "scheme" in str(exc.value)
     assert not list(tmp_path.glob("ran.*"))
+
+
+# ---- submodules off, nested repositories refused ------------------------------------------
+
+SUBMODULE_CONFIG = ["submodule.recurse=false", "diff.ignoreSubmodules=all",
+                    "status.submoduleSummary=false", "fetch.recurseSubmodules=false",
+                    "protocol.file.allow=never"]
+
+
+def flags_in(argv):
+    return [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-c"]
+
+
+def commit_all(tree, message="more"):
+    plain("add", "-A", cwd=tree)
+    plain("commit", "-q", "-m", message, cwd=tree)
+
+
+def test_file_protocol_default_is_never():
+    assert safe_git.FILE_PROTOCOL == "never"
+
+
+def test_every_git_has_the_submodule_flags(repo, tmp_path, monkeypatch):
+    clone, wt = repo
+    seen = spy_exec(monkeypatch)
+    real_run = subprocess.run
+    direct = []
+    monkeypatch.setattr(safe_git.subprocess, "run",
+                        lambda argv, **kw: (direct.append(argv), real_run(argv, **kw))[1])
+    safe_git.git(clone, wt, "status")
+    safe_git.git(clone, wt, "diff", "HEAD")
+    assert len(seen) > 6 and direct, "control: the pre-check reads and the kitchen read ran"
+    for argv in seen + direct:
+        assert argv[0] == safe_git.GIT_BIN
+        for want in SUBMODULE_CONFIG:
+            assert want in flags_in(argv), (want, argv)
+    for sub in ("status", "diff"):
+        argv = next(a for a in seen if sub in a and "-C" in a and a[a.index("-C") + 2] == sub)
+        assert "--ignore-submodules=all" in argv
+
+
+def test_file_protocol_value_comes_from_the_module(repo, monkeypatch):
+    clone, wt = repo
+    monkeypatch.setattr(safe_git, "FILE_PROTOCOL", "always")
+    seen = spy_exec(monkeypatch)
+    safe_git.git(clone, wt, "status")
+    assert all("protocol.file.allow=always" in flags_in(argv) for argv in seen)
+
+
+def test_push_to_a_local_origin_fails_without_the_swap(tmp_path, repo, monkeypatch):
+    bare, work = make_origin(tmp_path, repo)
+    (work / "c.txt").write_text("c\n", encoding="utf-8")
+    commit_all(work)
+    monkeypatch.setattr(safe_git, "URL_SCHEMES", ("",))
+    assert safe_git.FILE_PROTOCOL == "never"
+    res = safe_git.git(work, None, "push", "origin", "HEAD:refs/heads/pushed", url=str(bare))
+    assert res.returncode != 0 and "not allowed" in res.stderr
+    assert plain("for-each-ref", "refs/heads/pushed", cwd=bare).stdout == ""
+    monkeypatch.setattr(safe_git, "FILE_PROTOCOL", "always")  # control: the swap lets it through
+    res = safe_git.git(work, None, "push", "origin", "HEAD:refs/heads/pushed", url=str(bare))
+    assert res.returncode == 0, res.stderr
+    assert plain("for-each-ref", "refs/heads/pushed", cwd=bare).stdout != ""
+
+
+def test_plain_tree_files_and_dot_files_pass(repo):
+    clone, wt = repo
+    (wt / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (wt / ".gitattributes").write_text("*.txt text\n", encoding="utf-8")
+    (wt / "docs").mkdir()
+    (wt / "docs" / ".gitkeep").write_text("", encoding="utf-8")
+    (wt / ".github").mkdir()
+    (wt / ".github" / "ci.yml").write_text("x: 1\n", encoding="utf-8")
+    commit_all(wt)
+    safe_git.check(clone, wt)
+    safe_git.check(clone, wt, sha="HEAD")
+    assert safe_git.status_porcelain(clone, wt) == []
+
+
+def make_nested(wt, name="sub"):
+    """A repository inside the worktree, added to the index as a gitlink."""
+    sub = wt / name
+    plain("init", "-q", str(sub))
+    (sub / "f.txt").write_text("aaaa\n", encoding="utf-8")
+    plain("add", "f.txt", cwd=sub)
+    plain("commit", "-q", "-m", "inner", cwd=sub)
+    plain("add", name, cwd=wt)
+    return sub
+
+
+def test_gitlink_in_the_index_is_refused(repo):
+    clone, wt = repo
+    make_nested(wt)
+    assert "160000" in plain("ls-files", "-s", cwd=wt).stdout  # control: it is a gitlink
+    err = assert_refused(clone, wt, "gitlink")
+    assert "index" in str(err)
+
+
+def test_sha_with_a_gitlink_is_refused(repo):
+    clone, wt = repo
+    head = plain("rev-parse", "HEAD", cwd=wt).stdout.strip()
+    safe_git.check(clone, wt, sha=head)  # control: a plain sha passes
+    entry = f"160000 commit {head}\tsub\n"
+    tree = subprocess.run(["git", "mktree"], cwd=clone, env=ENV, input=entry, check=True,
+                          capture_output=True, text=True).stdout.strip()
+    bad = plain("commit-tree", tree, "-m", "gitlink", cwd=clone).stdout.strip()
+    err = assert_refused(clone, wt, "gitlink", sha=bad)
+    assert bad in str(err)
+    with pytest.raises(safe_git.GitRefused):
+        safe_git.git(clone, wt, "rev-parse", "HEAD", sha=bad)
+
+
+def test_nested_dot_git_file_is_refused(repo):
+    clone, wt = repo
+    safe_git.check(clone, wt)  # control: the tree passes before the plant
+    (wt / "sub").mkdir()
+    (wt / "sub" / ".git").write_text("gitdir: /outside\n", encoding="utf-8")
+    err = assert_refused(clone, wt, "nested .git")
+    assert "sub" in str(err)
+    with pytest.raises(safe_git.GitRefused):
+        safe_git.status_porcelain(clone, wt)
+
+
+@pytest.mark.parametrize("name", [".GIT", ".Git", ".g‌it", ".git﻿"])
+def test_nested_dot_git_by_case_or_ignored_code_points(repo, name):
+    clone, wt = repo
+    (wt / "sub").mkdir()
+    (wt / "sub" / name).mkdir()
+    assert_refused(clone, wt, "nested .git")
+
+
+def test_nested_dot_git_folder_is_refused_in_the_clone_too(repo):
+    clone, wt = repo
+    plain("init", "-q", str(clone / "inner"))
+    assert_refused(clone, None, "nested .git")
+    assert_refused(clone, wt, "nested .git")
+
+
+@pytest.mark.skipif(not POSIX, reason="needs symlinks")
+def test_dot_git_symlink_is_refused_and_not_followed(repo, tmp_path):
+    clone, wt = repo
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / ".git").mkdir()  # must never be walked into
+    (wt / "link").symlink_to(outside)
+    safe_git.check(clone, wt)  # control: a symlink to a folder with a .git is not followed
+    (wt / "sub").mkdir()
+    (wt / "sub" / ".git").symlink_to(outside)
+    assert_refused(clone, wt, "nested .git")
+
+
+def test_registered_worktrees_inside_the_clone_are_skipped(tmp_path, repo):
+    clone, _ = repo
+    inner = clone / "inner-wt"
+    plain("worktree", "add", "-q", "-b", "feat/in", str(inner), cwd=clone)
+    assert (inner / ".git").is_file()
+    safe_git.check(clone)  # the registered worktree has a .git file and is skipped
+    safe_git.check(clone, inner)
+    (clone / "stray").mkdir()
+    (clone / "stray" / ".git").write_text("gitdir: /outside\n", encoding="utf-8")
+    assert_refused(clone, None, "nested .git", "stray")
+
+
+def test_alternates_in_the_common_dir_is_refused(repo, tmp_path):
+    clone, wt = repo
+    safe_git.check(clone, wt)
+    info = clone / ".git" / "objects" / "info"
+    info.mkdir(exist_ok=True)
+    (info / "alternates").write_text(str(tmp_path / "elsewhere") + "\n", encoding="utf-8")
+    assert_refused(clone, wt, "alternates")
+    assert_refused(clone, None, "alternates")
+
+
+def test_diff_tree_shows_modes_and_a_gitlink(repo):
+    clone, wt = repo
+    base = plain("rev-parse", "HEAD", cwd=wt).stdout.strip()
+    (wt / "a.txt").write_text("changed\n", encoding="utf-8")
+    (wt / "-x").write_text("x\n", encoding="utf-8")
+    commit_all(wt)
+    head = plain("rev-parse", "HEAD", cwd=wt).stdout.strip()
+    rows = safe_git.diff_tree(clone, wt, base, head)
+    assert sorted(rows) == [("000000", "100644", "A", "-x"), ("100644", "100644", "M", "a.txt")]
+    # A gitlink is visible to the plumbing (the porcelain diff would hide it).
+    entry = f"160000 commit {base}\tsub\n"
+    tree = subprocess.run(["git", "mktree"], cwd=clone, env=ENV, input=entry, check=True,
+                          capture_output=True, text=True).stdout.strip()
+    bad = plain("commit-tree", tree, "-m", "gitlink", cwd=clone).stdout.strip()
+    raw = plain("diff-tree", "-r", "--raw", "--no-renames", base, bad, cwd=clone).stdout
+    assert "160000" in raw  # control: the plumbing shows it
+    with pytest.raises(safe_git.GitRefused):
+        safe_git.diff_tree(clone, wt, base, bad)
+
+
+HOSTILE = ["a\nb", "-x", "\x1b[31mz"]
+
+
+@pytest.mark.skipif(not POSIX, reason="names with a newline or ESC need a POSIX filesystem")
+def test_hostile_names_come_back_whole_and_never_become_options(repo):
+    clone, wt = repo
+    base = plain("rev-parse", "HEAD", cwd=wt).stdout.strip()
+    for name in HOSTILE:
+        (wt / name).write_text("x\n", encoding="utf-8")
+    assert sorted(safe_git.status_porcelain(clone, wt)) == sorted(f"?? {n}" for n in HOSTILE)
+    plain("add", "--", *HOSTILE, cwd=wt)
+    plain("commit", "-q", "-m", "hostile", cwd=wt)
+    head = plain("rev-parse", "HEAD", cwd=wt).stdout.strip()
+    assert sorted(safe_git.ls_files(clone, wt)) == sorted(["a.txt", *HOSTILE])
+    assert safe_git.ls_files(clone, wt, "-x") == ["-x"]  # after `--`: a path, not an option
+    paths = [row[3] for row in safe_git.diff_tree(clone, wt, base, head)]
+    assert sorted(paths) == sorted(HOSTILE)
+    shown = " ".join(ascii(p) for p in paths)
+    assert "\n" not in shown and "\x1b" not in shown
+    assert "\\x1b[31mz" in shown and "a\\nb" in shown
+
+
+def arm(sub, text):
+    """Rewrite the nested file with the same size and a newer mtime (so git must hash it)."""
+    path = sub / "f.txt"
+    assert len(text) == len("aaaa\n")
+    path.write_text(text, encoding="utf-8")
+    stamp = path.stat().st_mtime + 20
+    os.utime(path, (stamp, stamp))
+
+
+@pytest.mark.skipif(not POSIX, reason="needs a #!/bin/sh marker script")
+def test_nested_repo_filter_never_runs_through_safe_git(repo, tmp_path):
+    """Reproduction: a `filter.x.clean` in the config of a nested repo."""
+    clone, wt = repo
+    marker = tmp_path / "filter-ran"
+    script = make_marker_script(tmp_path / "clean.sh", marker)
+    sub = make_nested(wt)
+    plain("config", "filter.x.clean", str(script), cwd=sub)
+    (sub / ".gitattributes").write_text("*.txt filter=x\n", encoding="utf-8")
+    # Control: plain git, without the flags and outside safe_git, runs the filter.
+    arm(sub, "bbbb\n")
+    plain("status", cwd=wt)
+    assert marker.exists(), "scenario is not armed: plain git did not run filter.x.clean"
+    marker.unlink()
+    # Only the flags of the submodule rule, without the refusal: no filter either.
+    arm(sub, "cccc\n")
+    for argv in (["status", "--porcelain", "--ignore-submodules=all"],
+                 ["diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all"]):
+        safe_git._exec([safe_git.GIT_BIN, *safe_git._flags(), "-C", str(wt), *argv])
+    assert not marker.exists()
+    # With the refusal: both calls stop at the gitlink before any git runs on the tree.
+    arm(sub, "dddd\n")
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.status_porcelain(clone, wt)
+    assert "gitlink" in str(exc.value)
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.git(clone, wt, "diff")
+    assert "gitlink" in str(exc.value)
+    assert not marker.exists()
 
 
 # ---- CLI ------------------------------------------------------------------------------
