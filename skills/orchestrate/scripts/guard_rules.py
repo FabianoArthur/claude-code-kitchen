@@ -513,17 +513,13 @@ def _write_check(tool: str, tool_input: dict, config: dict) -> Optional[str]:
 UNIT_ID = re.compile(r"[A-Za-z0-9._-]+")
 
 
-def _snapshot(config: dict) -> dict:
-    """The unit's snapshot (written by the waiter at dispatch), or {} when absent or invalid.
+def _units_dir(config: dict) -> str:
+    return _env(config).get("KITCHEN_UNITS_DIR") or os.path.join(_home(config), ".claude", "kitchen-units")
 
-    What the unit may do beyond the default (`allow_config`, `task_doc`, `manifest`) is read only
-    from here: never from the task document, which the unit edits, nor from `kitchen-guard.json`.
-    """
-    env = _env(config)
-    unit = env.get("KITCHEN_UNIT") or ""
+
+def _load_snapshot(directory: str, unit: str) -> dict:
     if not UNIT_ID.fullmatch(unit) or unit in (".", ".."):
         return {}
-    directory = env.get("KITCHEN_UNITS_DIR") or os.path.join(_home(config), ".claude", "kitchen-units")
     try:
         with open(os.path.join(directory, unit + ".json"), encoding="utf-8") as handle:
             data = json.load(handle)
@@ -532,6 +528,61 @@ def _snapshot(config: dict) -> dict:
     if not isinstance(data, dict) or data.get("schema") != 1 or data.get("unit") != unit:
         return {}
     return data
+
+
+def _event_cwd(config: dict) -> str:
+    """Realpath of the hook event's cwd (the process cwd when the event has none)."""
+    return _real(config.get("_cwd") or os.getcwd())
+
+
+def _runs_dir(config: dict) -> str:
+    return _real(os.path.join(_home(config), ".claude", "kitchen-runs"))
+
+
+def cwd_in_kitchen(env, cwd) -> bool:
+    """True when `cwd` is inside the worktree of any unit snapshot or under `kitchen-runs/`.
+
+    This detects a kitchen session that lost its variables (a child process wiped the environment).
+    """
+    if not isinstance(cwd, str) or not cwd:
+        return False
+    config = {"_env": dict(env)}
+    here = _real(cwd)
+    if _inside(here, _runs_dir(config)):
+        return True
+    directory = _units_dir(config)
+    try:
+        names = sorted(n for n in os.listdir(directory) if n.endswith(".json"))
+    except OSError:
+        return False
+    for name in names:
+        worktree = _load_snapshot(directory, name[: -len(".json")]).get("worktree")
+        if isinstance(worktree, str) and worktree and _inside(here, _real(worktree)):
+            return True
+    return False
+
+
+def _snapshot(config: dict) -> dict:
+    """The unit's snapshot (written by the waiter at dispatch), or {} when absent or invalid.
+
+    What the unit may do beyond the default (`allow_config`, `task_doc`, `manifest`) is read only
+    from here: never from the task document, which the unit edits, nor from `kitchen-guard.json`.
+    The identity is tied to the event's cwd: `KITCHEN_UNIT` is accepted only when the cwd is inside
+    that snapshot's worktree (or `kitchen-runs/<kind>-<ID>/`). Anything else, such as another
+    unit's id or a `cd` out of the worktree, is the strictest case: no snapshot at all.
+    """
+    unit = _env(config).get("KITCHEN_UNIT") or ""
+    data = _load_snapshot(_units_dir(config), unit)
+    if not data:
+        return {}
+    here = _event_cwd(config)
+    worktree = data.get("worktree")
+    if isinstance(worktree, str) and worktree and _inside(here, _real(worktree)):
+        return data
+    runs = _runs_dir(config)
+    if _inside(here, runs) and re.fullmatch(r"[^/]+-" + re.escape(unit), here[len(runs) :].lstrip("/").split("/")[0]):
+        return data
+    return {}
 
 
 def _lower(path: str) -> str:
@@ -941,6 +992,247 @@ def _heavy_check(tool: str, tool_input: dict, config: dict) -> Optional[str]:
     return None
 
 
+# --- shared git config ---------------------------------------------------------------------
+# A linked worktree shares `<git-common-dir>/config` and `hooks/` with the waiter's clone, and a
+# `core.hooksPath`, `core.fsmonitor` or `core.sshCommand` set there (or with `git -c`) runs code
+# outside the guard the next time anyone uses the repository. The check reads text and paths only.
+
+GIT_CONFIG_READS = frozenset(
+    {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color", "--get-colorbool", "--list", "-l"}
+)
+GIT_RUN_KEYS = frozenset({"core.hookspath", "core.fsmonitor", "core.sshcommand"})
+GIT_REMOTE_WRITES = frozenset({"add", "set-url", "rename", "remove", "rm", "set-branches"})
+GIT_SHARED_NAMES = ("config", "config.worktree")
+GIT_SHARED_DIRS = ("hooks", "worktrees")
+GIT_VALUE_OPTS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"})
+
+
+def _git_words(words: list):
+    """(overrides, subcommand, args) of a `git` command; overrides are the `-c k=v` / `--config-env k=v`."""
+    if os.path.basename(words[0]) != "git":
+        return [], None, []
+    rest, i, overrides = words[1:], 0, []
+    while i < len(rest) and rest[i].startswith("-"):
+        word = rest[i]
+        if word in ("-c", "--config-env") and i + 1 < len(rest):
+            overrides.append(rest[i + 1])
+        elif word.startswith("--config-env="):
+            overrides.append(word.split("=", 1)[1])
+        elif word.startswith("-c") and len(word) > 2:
+            overrides.append(word[2:])
+        i += 2 if word in GIT_VALUE_OPTS else 1
+    return (overrides, rest[i], rest[i + 1 :]) if i < len(rest) else (overrides, None, [])
+
+
+def _git_config_words(words: list) -> Optional[str]:
+    overrides, sub, args = _git_words(words)
+    for override in overrides:
+        key = override.split("=", 1)[0].strip()
+        if key.lower() in GIT_RUN_KEYS:
+            return f"git -c {key} runs code outside the guard"
+    if sub == "config":
+        reads = GIT_CONFIG_READS.intersection(args) or args[:1] in (["get"], ["list"])
+        return None if reads else "git config writes settings the whole repository shares"
+    if sub == "remote":
+        verb = next((a for a in args if not a.startswith("-")), None)
+        if verb in GIT_REMOTE_WRITES:
+            return f"git remote {verb} changes the shared git config"
+    return None
+
+
+def _git_dirs(config: dict):
+    """(realpath of the worktree's `.git`, realpath of the git common dir or None)."""
+    worktree = _worktree(config)
+    dotgit = worktree + "/.git"
+    common = None
+    try:
+        if os.path.isdir(dotgit):
+            common = _real(dotgit)
+        elif os.path.isfile(dotgit):
+            with open(dotgit, encoding="utf-8") as handle:
+                found = re.match(r"gitdir:\s*(.+)", handle.read(4096))
+            if found:
+                gitdir = os.path.join(worktree, found.group(1).strip())  # absolute stays absolute
+                pointer = os.path.join(gitdir, "commondir")
+                if os.path.isfile(pointer):
+                    with open(pointer, encoding="utf-8") as handle:
+                        common = _real(os.path.join(gitdir, handle.read(4096).strip()))
+                elif os.path.basename(os.path.dirname(os.path.realpath(gitdir))) == "worktrees":
+                    common = _real(os.path.dirname(os.path.dirname(gitdir)))
+    except OSError:
+        pass
+    return _real(dotgit), common
+
+
+def _git_shared_path(path: str, dotgit: str, common) -> Optional[str]:
+    key = _lower(path)
+    if key == _lower(dotgit):
+        return "the worktree's .git pointer"
+    parts = key.split("/")
+    if ".git" in parts:  # any repository: the name is enough, the common dir may not resolve
+        after = parts[parts.index(".git") + 1 :]
+        if not after:
+            return "a .git entry"
+        if after[0] in GIT_SHARED_NAMES + GIT_SHARED_DIRS:
+            return f"the shared git {after[0]}"
+    if common:
+        root = _lower(common)
+        if any(key == root + "/" + n for n in GIT_SHARED_NAMES):
+            return "the shared git config"
+        if any(_inside(key, root + "/" + d) for d in GIT_SHARED_DIRS):
+            return "the shared git hooks or worktrees"
+    return None
+
+
+def _git_config_check(tool: str, tool_input: dict, config: dict) -> Optional[str]:
+    dotgit, common = _git_dirs(config)
+    if tool in SHELL_TOOLS:
+        for words, base in _bases(_command(tool_input), config):
+            reason = _git_config_words(words)
+            if reason:
+                return reason
+            for word, sources in _written_words(words):
+                for path in _target_paths(word, sources, base, config):
+                    reason = _git_shared_path(path, dotgit, common)
+                    if reason:
+                        return f"write to {reason}"
+        return None
+    for path in _real_tool_paths(tool_input, config):
+        reason = _git_shared_path(path, dotgit, common) if path else None
+        if reason:
+            return f"write to {reason}"
+    return None
+
+
+# --- process escape --------------------------------------------------------------------------
+# The guard lives in the unit's `claude` process and cannot be changed from inside. A child
+# process can: it can start a new `claude`/tmux session without the hook, drop `KITCHEN_*` from
+# the environment, or schedule work that outlives the unit. `nohup`, `setsid` and `&` only detach
+# a process from the terminal (`claude` and `KITCHEN_*` stay denied): best effort, not listed.
+
+ADMIN_SCRIPTS = frozenset(
+    {
+        "unit_snapshot.py",
+        "dispatcher.py",
+        "install_hooks.py",
+        "mcp_config.py",
+        "kitchen_session.py",
+        "end_session.py",
+        "prove.py",
+        "inspect.py",
+        "publish.py",
+    }
+)
+SCHEDULERS = frozenset({"launchctl", "crontab", "at", "batch", "osascript"})
+INTERPRETERS = SHELLS | {"source", ".", "uv", "uvx", "pipx", "node", "perl", "ruby"}
+TMUX_VALUE_OPTS = frozenset({"-L", "-S", "-c", "-T"})
+TMUX_READ_COMMANDS = frozenset({"ls", "has", "has-session"})
+KITCHEN_VAR = re.compile(r"(?:KITCHEN|CLAUDE)[A-Za-z0-9_]*=")
+ASSIGNING = frozenset({"export", "declare", "typeset", "readonly", "local"})
+
+
+def _raw_commands(command: str, depth: int = 0):
+    """Yields (raw words, unwrapped words) of every simple command, also inside `sh -c '...'`."""
+    for words in _split(command):
+        unwrapped = _unwrap(words)
+        yield words, unwrapped
+        if unwrapped and depth < 3 and os.path.basename(unwrapped[0]) in SHELLS and "-c" in unwrapped[1:-1]:
+            yield from _raw_commands(unwrapped[unwrapped.index("-c") + 1], depth + 1)
+
+
+def _env_escape(raw: list, words: list) -> Optional[str]:
+    prefix = raw[: max(0, len(raw) - len(words))]  # what `_unwrap` dropped: assignments, env, sudo...
+    if any(KITCHEN_VAR.match(w) for w in prefix):
+        return "setting a KITCHEN_/CLAUDE variable for a child process"
+    for i, word in enumerate(prefix):
+        if os.path.basename(word) != "env":
+            continue
+        for option in prefix[i + 1 :]:
+            clears = option in ("-", "--ignore-environment") or option.startswith("--unset")
+            if clears or (re.fullmatch(r"-[A-Za-z]+", option) and set(option[1:]) & set("iu")):
+                return "env clears or edits the environment the guard relies on"
+    if words and os.path.basename(words[0]) in ASSIGNING and any(KITCHEN_VAR.match(w) for w in words[1:]):
+        return "setting a KITCHEN_/CLAUDE variable for a child process"
+    return None
+
+
+def _tmux_escape(words: list) -> Optional[str]:
+    if any("#(" in w for w in words):
+        return "tmux runs a #( ) command from a format string"
+    if any(w == ";" or w.endswith(";") for w in words[1:]):
+        return "tmux command chain"
+    rest, i = words[1:], 0
+    while i < len(rest) and rest[i].startswith("-"):
+        if rest[i] == "-f":
+            return "tmux with a config file runs its commands"
+        i += 2 if rest[i] in TMUX_VALUE_OPTS else 1
+    sub = rest[i] if i < len(rest) else None
+    if sub in TMUX_READ_COMMANDS or (sub and sub.startswith("list-")):
+        return None
+    if sub in ("display", "display-message") and "p" in _short_flags(rest[i + 1 :]):
+        return None
+    return f"tmux {sub or '(attach)'} can start a session without the guard"
+
+
+def _admin_reads(name: str, rest: list) -> bool:
+    positional = [a for a in rest if not a.startswith("-")]
+    if name == "install_hooks.py":
+        return "--check" in rest and "--uninstall" not in rest
+    if name == "unit_snapshot.py":
+        return positional[:1] == ["show"]
+    if name == "dispatcher.py":
+        return positional[:2] == ["limit", "get"]
+    return False
+
+
+def _admin_escape(words: list) -> Optional[str]:
+    base = os.path.basename(words[0])
+    if base in ADMIN_SCRIPTS:
+        index = 0
+    elif base in INTERPRETERS or re.fullmatch(r"(?:python|pypy)[\d.]*", base):
+        index = next((i for i, w in enumerate(words[1:], 1) if os.path.basename(w) in ADMIN_SCRIPTS), None)
+        if index is None:
+            return None
+    else:
+        return None
+    name, rest = os.path.basename(words[index]), words[index + 1 :]
+    if any(a in ("--selftest", "--help", "-h") for a in rest) or _admin_reads(name, rest):
+        return None
+    return f"{name} is a kitchen administration script"
+
+
+def _open_escape(words: list) -> Optional[str]:
+    flags = _short_flags(words[1:])
+    if "a" in flags or "b" in flags or any(w.rstrip("/").endswith(".app") for w in words[1:]):
+        return "open starts an application"
+    return None
+
+
+def _process_escape_check(tool: str, tool_input: dict, config: dict) -> Optional[str]:
+    for raw, words in _raw_commands(_command(tool_input)):
+        reason = _env_escape(raw, words)
+        if reason:
+            return reason
+        if not words:
+            continue
+        base = os.path.basename(words[0])
+        if base == "claude":
+            return "starting claude from inside the unit skips the guard"
+        if base == "unset":
+            return "unset can drop the variables the guard relies on"
+        if base == "tmux":
+            reason = _tmux_escape(words)
+        elif base in SCHEDULERS:
+            reason = f"{base} starts work outside the unit"
+        elif base == "open":
+            reason = _open_escape(words)
+        else:
+            reason = _admin_escape(words)
+        if reason:
+            return reason
+    return None
+
+
 RULES = (
     Rule("input-size", False, _size_check, _AnyTool()),
     Rule("merge", True, _regex_check(r"\bgh\s+pr\s+merge\b", "merging is the human's call")),
@@ -971,6 +1263,8 @@ RULES = (
     Rule("sql-destructive", True, _sql_check),
     Rule("config-protected", True, _config_check, SHELL_TOOLS | WRITE_TOOLS),
     Rule("write-outside", True, _write_check, SHELL_TOOLS | WRITE_TOOLS),
+    Rule("git-config", True, _git_config_check, SHELL_TOOLS | WRITE_TOOLS),
+    Rule("process-escape", True, _process_escape_check),
     Rule("watch", False, _watch_check),
     Rule("protected-script", True, _protected_check),
     Rule("heavy", False, _heavy_check),
