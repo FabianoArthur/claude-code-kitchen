@@ -63,6 +63,15 @@ Output that a program reads uses `-z`, paths go after `--`, and whatever is show
 human goes through `ascii()`. The list of changed paths comes from `diff_tree()`
 (plumbing, which shows a gitlink; porcelain `diff` hides it).
 
+gh: `gh(*args, cwd=...)` runs the absolute `gh` with the same closed environment plus
+`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` (hooks and fsmonitor off, the submodule keys),
+`GIT_CEILING_DIRECTORIES` = parent of the cwd and `GIT_DIR` = an absent path in the cwd, so the
+git inside `gh` finds no repository. The cwd must be `~/.claude/kitchen-runs/<kind>-<ID>` or
+`.../doctor`, 0700, owned by the user, with no `.git` in it or above it up to HOME, and outside
+the clone and every registered worktree. Every call carries `--repo <owner>/<name>` (except
+`api repos/<owner>/<name>/...` and `auth status`) and `pr create` also `--head`. Nothing else
+in `scripts/` starts gh.
+
 Usage:
     python3 safe_git.py init                                         create ~/.claude/kitchen-git
     python3 safe_git.py check <clone> [<worktree>] [--url <url>]     exit 0 ok, 7 refused
@@ -467,6 +476,121 @@ def ls_files(clone, worktree, *paths):
     return [e for e in res.stdout.split("\0") if e]
 
 
+REPO_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+RUN_DIR_NAME = re.compile(r"(doctor|[A-Za-z0-9]+-[A-Za-z0-9][A-Za-z0-9._-]*)")
+NO_GIT_NAME = ".kitchen-no-git"
+
+
+def _runs_root():
+    return Path(os.path.realpath(os.path.join(os.path.expanduser("~"), ".claude", "kitchen-runs")))
+
+
+def _inside(path, root):
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:  # different drives
+        return False
+
+
+def _check_gh_cwd(cwd, clone):
+    """Return the realpath of `cwd` unless it is not a kitchen run folder that git cannot reach."""
+    real = os.path.realpath(cwd)
+    if clone is not None:
+        main = os.path.realpath(clone)
+        roots = {main} | _registered_worktrees(Path(os.path.realpath(os.path.join(main, ".git"))))
+        for root in sorted(roots):
+            if _inside(real, root):
+                raise GitRefused(f"gh cwd {cwd} is inside the clone or a worktree ({root})")
+    runs = _runs_root()
+    if os.path.dirname(real) != str(runs) or not RUN_DIR_NAME.fullmatch(os.path.basename(real)):
+        raise GitRefused(f"gh cwd {cwd} is not <kind>-<ID> or doctor under {runs}")
+    _owned(real, _lstat(real, "gh cwd", True), 0o700, "gh cwd")
+    home = os.path.realpath(os.path.expanduser("~"))
+    here = real
+    while True:
+        if os.path.lexists(os.path.join(here, ".git")):
+            raise GitRefused(f"gh cwd {cwd}: .git exists in {here}")
+        if here == home:
+            break
+        parent = os.path.dirname(here)
+        if parent == here:
+            raise GitRefused(f"gh cwd {cwd} is not below HOME {home}")
+        here = parent
+    if os.path.lexists(os.path.join(real, NO_GIT_NAME)):
+        raise GitRefused(f"gh cwd {cwd}: {NO_GIT_NAME} exists")
+    return real
+
+
+def _option_values(args, long, short):
+    """Values given to `--long v`, `--long=v`, `-S v` or `-Sv`."""
+    found = []
+    for i, arg in enumerate(args):
+        if arg == long or arg == short:
+            found.append(args[i + 1] if i + 1 < len(args) else "")
+        elif arg.startswith(long + "="):
+            found.append(arg[len(long) + 1:])
+        elif short and arg.startswith(short) and not arg.startswith("--"):
+            found.append(arg[len(short):])
+    return found
+
+
+def _check_gh_args(args):
+    """Every gh call names its repository; `pr create` also names its head."""
+    if not args:
+        raise GitRefused("gh needs arguments")
+    if list(args[:2]) == ["auth", "status"]:
+        return
+    if args[0] == "api":
+        endpoint = args[1] if len(args) > 1 else ""
+        if not re.fullmatch(r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/.*)?", endpoint):
+            raise GitRefused(f"gh api needs repos/<owner>/<name>/... right after api, got {endpoint!r}")
+        return
+    repos = _option_values(args, "--repo", "-R")
+    if not repos or not all(REPO_NAME.fullmatch(r) for r in repos):
+        raise GitRefused(f"gh {args[0]} needs --repo <owner>/<name>, got {repos!r}")
+    if list(args[:2]) == ["pr", "create"] and not any(_option_values(args, "--head", "-H")):
+        raise GitRefused("gh pr create needs --head")
+
+
+def _gh_env(real_cwd):
+    """The closed environment plus config entries and a git that cannot find any repository."""
+    env = _env()
+    pairs = [_flags()[i + 1].partition("=")[::2] for i, f in enumerate(_flags()) if f == "-c"]
+    env["GIT_CONFIG_COUNT"] = str(len(pairs))
+    for n, (key, value) in enumerate(pairs):
+        env[f"GIT_CONFIG_KEY_{n}"] = key
+        env[f"GIT_CONFIG_VALUE_{n}"] = value
+    env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(real_cwd)
+    env["GIT_DIR"] = os.path.join(real_cwd, NO_GIT_NAME)
+    return env
+
+
+def _exec_gh(gh_argv, cwd, env):
+    """The one place that starts gh (tests patch PATH or this function)."""
+    try:
+        return subprocess.run(gh_argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="surrogateescape", check=False)
+    except OSError as exc:
+        raise GitRefused(f"cannot run gh: {exc}") from None
+
+
+def gh(*args, cwd, clone=None):
+    """Run the absolute `gh` with a closed environment, in a kitchen run folder outside any repo.
+
+    `cwd` is `~/.claude/kitchen-runs/<kind>-<ID>` or `.../doctor` (0700, owned by the user, no
+    `.git` up to HOME). Pass `clone` so a cwd inside the clone or a registered worktree is
+    refused by name. gh's own git sees `GIT_DIR` pointing at an absent path.
+    """
+    _check_gh_args(args)
+    _validate_kitchen()
+    real = _check_gh_cwd(cwd, clone)
+    exe = _gh_abs()
+    if exe is None:
+        raise GitRefused("gh not found on PATH")
+    return _exec_gh([exe, *args], real, _gh_env(real))
+
+
 def selftest():
     ok = True
 
@@ -528,6 +652,12 @@ def selftest():
             (clone / ".git" / "info" / "grafts").write_text("", encoding="utf-8")
             msg = refused(check, clone)
             case("grafts refused", msg is not None and "info/grafts" in msg)
+            case("gh without --repo refused", "--repo" in (refused(_check_gh_args, ["pr", "list"]) or ""))
+            case("gh pr create without --head refused",
+                 "--head" in (refused(_check_gh_args, ["pr", "create", "--repo", "o/r"]) or ""))
+            case("gh api repos path ok", refused(_check_gh_args, ["api", "repos/o/r/pulls"]) is None)
+            case("gh cwd outside kitchen-runs refused",
+                 "kitchen-runs" in (refused(gh, "auth", "status", cwd=tmp) or ""))
         finally:
             for key, value in saved.items():
                 if value is None:
