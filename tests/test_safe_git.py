@@ -1,5 +1,7 @@
 """safe_git.py — git on a unit-written tree, with an allowlisted config."""
 import os
+import shutil
+import stat
 import subprocess
 import sys
 
@@ -33,6 +35,24 @@ def make_marker_script(path, marker, body="cat"):
     return path
 
 
+@pytest.fixture(autouse=True)
+def kitchen_home(tmp_path, monkeypatch):
+    """A temporary HOME with the kitchen-git folder that `safe_git.py init` makes."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    safe_git.init()
+    return home
+
+
+@pytest.fixture
+def local_urls(monkeypatch):
+    """Tests whose origin is a local path accept any url scheme."""
+    monkeypatch.setattr(safe_git, "URL_SCHEMES", ("",))
+
+
 @pytest.fixture
 def repo(tmp_path):
     """A clone (git init + one commit) and a linked worktree."""
@@ -63,7 +83,7 @@ def test_fresh_init_and_worktree_pass(repo):
     safe_git.check(clone, wt)
 
 
-def test_fresh_clone_passes(tmp_path, repo):
+def test_fresh_clone_passes(tmp_path, repo, local_urls):
     src, _ = repo
     dst = tmp_path / "cloned"
     plain("clone", "-q", str(src), str(dst))
@@ -295,7 +315,11 @@ def test_command_line_has_safe_flags_and_env(repo, monkeypatch):
     assert "--no-ext-diff" in argv and "--no-textconv" in argv
     env = safe_git._env()
     assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
-    assert env["GIT_CONFIG_NOSYSTEM"] == "1" and env["GIT_CONFIG_GLOBAL"] == "/dev/null"
+    kitchen = safe_git._kitchen_dir()
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert env["GIT_CONFIG_GLOBAL"] == str(kitchen / "gitconfig")
+    assert env["XDG_CONFIG_HOME"] == str(kitchen / "xdg")
+    assert os.path.isabs(env["GH_CONFIG_DIR"])
     assert "GIT_DIR" not in env and "GIT_CONFIG_PARAMETERS" not in env
 
 
@@ -313,6 +337,301 @@ def test_status_failure_is_refusal_not_empty_list(repo, monkeypatch):
     with pytest.raises(safe_git.GitRefused) as exc:
         safe_git.status_porcelain(clone, wt)
     assert "status" in str(exc.value)
+
+
+# ---- closed environment, kitchen-git folder, url rules ---------------------------------
+
+FAKE_GIT = """#!/bin/sh
+/usr/bin/env > '{dump}'.$$
+exec '{real}' "$@"
+"""
+
+
+def sign_head(clone, branch="feat/x"):
+    """Rewrite `branch` to a commit with a (fake) gpgsig header."""
+    tree = plain("rev-parse", "HEAD^{tree}", cwd=clone).stdout.strip()
+    sig = "gpgsig -----BEGIN PGP SIGNATURE-----\n \n fake\n -----END PGP SIGNATURE-----\n"
+    body = (f"tree {tree}\nauthor t <t@example.com> 1 +0000\n"
+            f"committer t <t@example.com> 1 +0000\n{sig}\nsigned\n")
+    sha = subprocess.run(["git", "hash-object", "-t", "commit", "-w", "--stdin"], cwd=clone,
+                         env=ENV, input=body, check=True, capture_output=True,
+                         text=True).stdout.strip()
+    plain("update-ref", f"refs/heads/{branch}", sha, cwd=clone)
+
+
+def install_fake_git(tmp_path, monkeypatch, dump_name):
+    dump = tmp_path / dump_name
+    fake = tmp_path / "fake-git"
+    fake.write_text(FAKE_GIT.format(dump=dump, real=shutil.which("git")), encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setattr(safe_git, "GIT_BIN", str(fake))
+    return dump
+
+
+@pytest.mark.skipif(not POSIX, reason="needs a #!/bin/sh fake git")
+def test_home_and_xdg_config_never_reach_the_waiter_git(repo, tmp_path, kitchen_home,
+                                                        monkeypatch):
+    clone, wt = repo
+    marker = tmp_path / "gpg-ran"
+    script = make_marker_script(tmp_path / "gpg.sh", marker, "exit 1")
+    sign_head(clone)
+    user_cfg = f"[gpg]\n\tprogram = {script}\n[log]\n\tshowSignature = true\n"
+    (kitchen_home / ".gitconfig").write_text(user_cfg, encoding="utf-8")
+    xdg = tmp_path / "xdg-real"
+    (xdg / "git").mkdir(parents=True)
+    (xdg / "git" / "config").write_text(user_cfg, encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    # Control: ordinary git with this HOME runs the planted program.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    subprocess.run(["git", "log", "-1"], cwd=wt, env=env, check=True, capture_output=True)
+    assert marker.exists(), "scenario is not armed: plain git did not run gpg.program"
+    marker.unlink()
+    install_fake_git(tmp_path, monkeypatch, "env-dump")
+    for name, value in (("GIT_DIR", "/nonexistent"), ("GIT_CONFIG_COUNT", "1"),
+                        ("GIT_CONFIG_KEY_0", "core.askpass"), ("GIT_CONFIG_VALUE_0", "/x"),
+                        ("GIT_CONFIG_PARAMETERS", "'core.askpass=/x'"),
+                        ("GIT_SSH_COMMAND", "/x")):
+        monkeypatch.setenv(name, value)
+    res = safe_git.git(clone, wt, "log", "-1")
+    assert res.returncode == 0, res.stderr
+    assert not marker.exists()
+    dumps = list(tmp_path.glob("env-dump.*"))
+    assert dumps, "control: the fake git did not run"
+    kitchen = safe_git._kitchen_dir()
+    allowed_git = {"GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_NO_REPLACE_OBJECTS",
+                   "GIT_TERMINAL_PROMPT"}
+    for path in dumps:
+        seen = dict(line.split("=", 1) for line in path.read_text().splitlines() if "=" in line)
+        assert not [k for k in seen if k.startswith("GIT_") and k not in allowed_git]
+        assert seen["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert seen["GIT_CONFIG_GLOBAL"] == str(kitchen / "gitconfig")
+        assert seen["XDG_CONFIG_HOME"] == str(kitchen / "xdg")
+        assert seen["GH_CONFIG_DIR"] == os.path.abspath(seen["GH_CONFIG_DIR"])
+
+
+def test_every_git_of_the_module_uses_the_closed_env(repo, monkeypatch):
+    clone, wt = repo
+    envs = []
+    real = subprocess.run
+
+    def spy(argv, **kw):
+        envs.append(kw["env"])
+        return real(argv, **kw)
+
+    monkeypatch.setenv("GIT_DIR", "/nonexistent")
+    monkeypatch.setattr(safe_git.subprocess, "run", spy)
+    safe_git.git(clone, wt, "rev-parse", "HEAD")
+    assert len(envs) > 3, "control: the pre-check reads ran"
+    for env in envs:
+        assert "GIT_DIR" not in env and env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert env["GIT_CONFIG_GLOBAL"] == str(safe_git._kitchen_dir() / "gitconfig")
+
+
+def test_env_keeps_only_the_allowlist(monkeypatch):
+    monkeypatch.setenv("SECRET_TOKEN", "x")
+    monkeypatch.setenv("GIT_ASKPASS", "/x")
+    monkeypatch.setenv("KITCHEN_UNIT", "U-1")
+    monkeypatch.setenv("LC_CTYPE", "C")
+    env = safe_git._env()
+    assert "SECRET_TOKEN" not in env and "GIT_ASKPASS" not in env
+    assert env["KITCHEN_UNIT"] == "U-1" and env["LC_CTYPE"] == "C"
+    assert env["LC_ALL"] == "C"
+
+
+def test_init_is_idempotent_and_valid(kitchen_home):
+    safe_git.init()
+    safe_git._validate_kitchen()
+    assert (kitchen_home / ".claude" / "kitchen-git" / "xdg").is_dir()
+
+
+@pytest.mark.skipif(not POSIX, reason="needs POSIX modes")
+def test_init_modes():
+    base = safe_git._kitchen_dir()
+    assert stat.S_IMODE(base.stat().st_mode) == 0o700
+    assert stat.S_IMODE((base / "gitconfig").stat().st_mode) == 0o600
+
+
+def test_missing_kitchen_git_is_refused(repo, kitchen_home):
+    clone, wt = repo
+    shutil.rmtree(kitchen_home / ".claude")
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.check(clone, wt)
+    assert "kitchen-git" in str(exc.value)
+
+
+@pytest.mark.skipif(not POSIX, reason="needs POSIX modes")
+def test_gitconfig_mode_0644_is_refused(repo):
+    clone, wt = repo
+    safe_git.check(clone, wt)  # control: valid before the change
+    (safe_git._kitchen_dir() / "gitconfig").chmod(0o644)
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.check(clone, wt)
+    assert "gitconfig" in str(exc.value) and "0o644" in str(exc.value)
+
+
+@pytest.mark.skipif(not POSIX, reason="needs POSIX modes")
+def test_kitchen_dir_mode_is_refused(repo):
+    clone, wt = repo
+    safe_git._kitchen_dir().chmod(0o755)
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.check(clone, wt)
+    assert "kitchen-git folder" in str(exc.value)
+
+
+def test_gitconfig_with_askpass_is_refused(repo):
+    clone, wt = repo
+    safe_git.check(clone, wt)  # control
+    plain("config", "--file", str(safe_git._kitchen_dir() / "gitconfig"), "core.askpass", "/x")
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.check(clone, wt)
+    assert "core.askpass" in str(exc.value)
+
+
+def test_xdg_folder_must_stay_empty(repo):
+    clone, wt = repo
+    (safe_git._kitchen_dir() / "xdg" / "git").mkdir()
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.check(clone, wt)
+    assert "xdg" in str(exc.value)
+
+
+def test_credential_helper_values(repo, monkeypatch):
+    clone, wt = repo
+    gitconfig = safe_git._kitchen_dir() / "gitconfig"
+    monkeypatch.setattr(safe_git, "_gh_abs", lambda: "/opt/tools/gh")
+    plain("config", "--file", str(gitconfig), "--unset-all", safe_git.CREDENTIAL_KEY)
+    plain("config", "--file", str(gitconfig), "--add", safe_git.CREDENTIAL_KEY, "")
+    plain("config", "--file", str(gitconfig), "--add", safe_git.CREDENTIAL_KEY,
+          "!/opt/tools/gh auth git-credential")
+    safe_git.check(clone, wt)  # the values `gh auth setup-git` writes
+    plain("config", "--file", str(gitconfig), "--add", safe_git.CREDENTIAL_KEY, "!/tmp/evil")
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.check(clone, wt)
+    assert "helper" in str(exc.value)
+
+
+def test_init_writes_the_gh_helper(tmp_path, monkeypatch):
+    home = tmp_path / "home2"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(safe_git, "_gh_abs", lambda: "/opt/tools/gh")
+    safe_git.init()
+    text = (home / ".claude" / "kitchen-git" / "gitconfig").read_text(encoding="utf-8")
+    assert "!/opt/tools/gh auth git-credential" in text
+
+
+@pytest.mark.parametrize("sub", ["fetch", "ls-remote", "push", "remote"])
+def test_remote_commands_need_a_url(repo, monkeypatch, sub):
+    clone, wt = repo
+    calls = []
+    monkeypatch.setattr(safe_git, "_exec", lambda argv, cwd=None: calls.append(argv))
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.git(clone, wt, sub, "origin")
+    assert "url" in str(exc.value)
+    assert calls == []
+
+
+def make_origin(tmp_path, repo):
+    """A bare origin and a clone of it whose origin url is a local path."""
+    src, _ = repo
+    bare = tmp_path / "origin.git"
+    plain("clone", "-q", "--bare", str(src), str(bare))
+    work = tmp_path / "work"
+    plain("clone", "-q", str(bare), str(work))
+    return bare, work
+
+
+def spy_exec(monkeypatch):
+    calls = []
+    real = safe_git._exec
+
+    def spy(argv, cwd=None):
+        calls.append(argv)
+        return real(argv, cwd)
+
+    monkeypatch.setattr(safe_git, "_exec", spy)
+    return calls
+
+
+def test_changed_origin_url_is_refused_before_fetch(tmp_path, repo, local_urls):
+    bare, work = make_origin(tmp_path, repo)
+    url = str(bare)
+    assert safe_git.git(work, None, "fetch", "origin", url=url).returncode == 0  # control
+    other = tmp_path / "othér.git"
+    plain("clone", "-q", "--bare", str(bare), str(other))
+    plain("config", "remote.origin.url", str(other), cwd=work)
+    before = plain("for-each-ref", cwd=bare).stdout
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.git(work, None, "fetch", "origin", url=url)
+    msg = str(exc.value)
+    assert "remote.origin.url" in msg and "xe9" in msg and msg.isascii()
+    assert plain("for-each-ref", cwd=bare).stdout == before
+    plain("config", "remote.origin.url", url, cwd=work)
+    assert safe_git.git(work, None, "fetch", "origin", url=url).returncode == 0
+
+
+def test_fetch_never_brings_tags(tmp_path, repo, local_urls):
+    bare, work = make_origin(tmp_path, repo)
+    src = repo[0]
+    base = plain("symbolic-ref", "--short", "HEAD", cwd=src).stdout.strip()
+    # A new commit on the origin, tagged `origin/<base>` and `<base>` after the clone.
+    (src / "b.txt").write_text("b\n", encoding="utf-8")
+    plain("add", "b.txt", cwd=src)
+    plain("commit", "-q", "-m", "second", cwd=src)
+    plain("push", "-q", str(bare), f"HEAD:refs/heads/{base}", cwd=src)
+    sha = plain("rev-parse", f"refs/heads/{base}", cwd=bare).stdout.strip()
+    plain("tag", f"origin/{base}", sha, cwd=bare)
+    plain("tag", base, sha, cwd=bare)
+    # Control: on a copy of the scenario, a plain fetch writes both tags into the clone.
+    copy = tmp_path / "work-copy"
+    shutil.copytree(work, copy)
+    plain("fetch", "-q", "origin", cwd=copy)
+    tags = plain("for-each-ref", "--format=%(refname)", "refs/tags/", cwd=copy).stdout.split()
+    assert sorted(tags) == sorted([f"refs/tags/origin/{base}", f"refs/tags/{base}"])
+    # The waiter fetch moves the branch and leaves no tag.
+    assert safe_git.git(work, None, "fetch", "origin", url=str(bare)).returncode == 0
+    assert plain("rev-parse", f"refs/remotes/origin/{base}", cwd=work).stdout.strip() == sha
+    assert plain("for-each-ref", "refs/tags/", cwd=work).stdout == ""
+
+
+@pytest.mark.parametrize("flag", ["--tags", "-t", "-qt"])
+def test_fetch_with_tags_flag_is_refused(tmp_path, repo, local_urls, monkeypatch, flag):
+    bare, work = make_origin(tmp_path, repo)
+    assert safe_git.git(work, None, "fetch", "origin", url=str(bare)).returncode == 0  # control
+    calls = spy_exec(monkeypatch)
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.git(work, None, "fetch", flag, "origin", url=str(bare))
+    assert "tags" in str(exc.value)
+    assert calls == []
+
+
+def test_fetch_gets_no_tags_flag_once(tmp_path, repo, local_urls, monkeypatch):
+    bare, work = make_origin(tmp_path, repo)
+    calls = spy_exec(monkeypatch)
+    safe_git.git(work, None, "fetch", "origin", url=str(bare))
+    assert calls[-1].count("--no-tags") == 1
+    safe_git.git(work, None, "fetch", "--no-tags", "origin", url=str(bare))
+    assert calls[-1].count("--no-tags") == 1
+
+
+@pytest.mark.skipif(not POSIX, reason="needs a #!/bin/sh fake git")
+@pytest.mark.parametrize("url", ["git@example.com:o/r.git", "ssh://git@example.com/o/r.git",
+                                 "file:///tmp/r.git", "/tmp/r.git"])
+def test_non_https_url_is_refused_by_scheme(repo, tmp_path, monkeypatch, url):
+    clone, wt = repo
+    install_fake_git(tmp_path, monkeypatch, "ran")
+    plain("remote", "add", "origin", "https://example.com/r.git", cwd=clone)
+    # Control: with the fake git in place, an https url reaches git (the dump is written).
+    safe_git.git(clone, wt, "ls-remote", "--get-url", "origin", url="https://example.com/r.git")
+    assert list(tmp_path.glob("ran.*")), "control: the fake git did not run"
+    for old in tmp_path.glob("ran.*"):
+        old.unlink()
+    plain("config", "remote.origin.url", url, cwd=clone)
+    with pytest.raises(safe_git.GitRefused) as exc:
+        safe_git.git(clone, wt, "fetch", "origin", url=url)
+    assert "scheme" in str(exc.value)
+    assert not list(tmp_path.glob("ran.*"))
 
 
 # ---- CLI ------------------------------------------------------------------------------
