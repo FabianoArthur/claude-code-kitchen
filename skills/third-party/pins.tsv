@@ -1,0 +1,3 @@
+# name	repository	tag	commit (full SHA)	skill folder inside the repository
+archify	https://github.com/tt-a1i/archify.git	v3.2.0	208acba8d412335185b2056fedf54b3405df43fb	archify
+ponytail	https://github.com/DietrichGebert/ponytail.git	v5.3.3	7801d061243d7b753bad0e0b3c057cd250b11755	skills/ponytail
