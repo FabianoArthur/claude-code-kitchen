@@ -29,6 +29,35 @@ import Testing
         #expect(s.divergences[1].attachCommand == "tmux attach -t '=kitchen-stray'")
     }
 
+    @Test func decodesTokensAndAlerts() throws {
+        let s = try KitchenSnapshot.decode(Fixture.data("kitchen.json"))
+        #expect(s.tokensToday == 1_250_000)
+        #expect(s.units.map(\.tokens) == [48_210, 1_830, nil, nil, nil, nil])
+        #expect(s.units.map(\.alert) == [0, 1, 0, 0, 0, 0])
+        #expect(s.units.map(\.isAlerting) == [false, true, false, false, false, false])
+        #expect(s.alerting.map(\.unit) == ["export-csv"])
+    }
+
+    @Test func tokensAndAlertsAreOptional() throws {
+        let json = #"{"schema": 1, "units": [{"unit": "a", "status": "running"}]}"#
+        let s = try KitchenSnapshot.decode(Data(json.utf8))
+        #expect(s.tokensToday == nil)
+        #expect(s.units[0].tokens == nil && s.units[0].alert == nil)
+        #expect(!s.units[0].isAlerting && s.alerting.isEmpty)
+        #expect(s.units[0].accessibilityLabel == "a, running")
+        let error = try KitchenSnapshot.decode(Fixture.data("kitchen-error.json"))
+        #expect(error.tokensToday == nil)
+    }
+
+    @Test func wrongTypedTokensAndAlertsBecomeNil() throws {
+        let json = #"{"schema": 1, "tokens_today": "lots", "units": [{"unit": "a", "status": "running", "tokens": "many", "alert": [1]}, {"unit": "b", "status": "waiting", "tokens": -5, "alert": 2}]}"#
+        let s = try KitchenSnapshot.decode(Data(json.utf8))
+        #expect(s.tokensToday == nil)
+        #expect(s.units[0].tokens == nil && s.units[0].alert == nil)
+        #expect(s.units[1].tokens == 0 && s.units[1].alert == 2)
+        #expect(s.units[1].accessibilityLabel.hasSuffix("alert, still waiting"))
+    }
+
     @Test func decodesTheErrorFixture() throws {
         let s = try KitchenSnapshot.decode(Fixture.data("kitchen-error.json"))
         #expect(s.error == "ZeroDivisionError: division by zero")

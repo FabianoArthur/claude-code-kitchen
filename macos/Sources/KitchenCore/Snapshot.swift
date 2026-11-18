@@ -47,12 +47,16 @@ public struct KitchenUnit: Equatable, Sendable, Identifiable, Decodable {
     public var recent: Bool
     public var pane: String
     public var attachCommand: String?
+    /// Tokens of the unit's newest session; nil when the script could not read a transcript.
+    public var tokens: Int?
+    /// 0 = fine, 1 = waiting on you too long, 2 = still waiting. nil when the script predates alerts.
+    public var alert: Int?
 
     public var id: String { "\(project)/\(unit)/\(branch)" }
 
     enum CodingKeys: String, CodingKey {
         case unit, project, status, reason, size, route, branch, pr, prLink, session, alive, done
-        case ageSeconds, ageText, recent, pane, attachCommand
+        case ageSeconds, ageText, recent, pane, attachCommand, tokens, alert
     }
 
     public init(from decoder: Decoder) throws {
@@ -74,13 +78,20 @@ public struct KitchenUnit: Equatable, Sendable, Identifiable, Decodable {
         recent = c.lenient(Bool.self, .recent) ?? true
         pane = c.lenient(String.self, .pane) ?? ""
         attachCommand = c.lenient(String.self, .attachCommand)
+        tokens = c.lenient(Int.self, .tokens).map { max(0, $0) }
+        alert = c.lenient(Int.self, .alert)
     }
+
+    /// True when the unit has been waiting on you long enough to raise an alert.
+    public var isAlerting: Bool { (alert ?? 0) > 0 }
 
     /// e.g. "export-csv, waiting on you, demo-app, 1 hour 12 minutes, PR 43: pick the CSV dialect".
     public var accessibilityLabel: String {
         var parts = [unit, status.phrase, project]
         if let ageSeconds { parts.append(Formatting.spokenAge(seconds: ageSeconds)) }
         if !pr.isEmpty { parts.append("PR \(pr)") }
+        if let tokens { parts.append("\(Formatting.tokens(tokens)) tokens") }
+        if isAlerting { parts.append(alert == 2 ? "alert, still waiting" : "alert, waiting too long") }
         let label = parts.filter { !$0.isEmpty }.joined(separator: ", ")
         return reason.isEmpty ? label : "\(label): \(reason)"
     }
@@ -119,11 +130,12 @@ public struct KitchenSnapshot: Equatable, Sendable, Decodable {
     public var tmuxReason: String
     public var globs: Int
     public var manifestDir: String
+    public var tokensToday: Int?
     public var units: [KitchenUnit]
     public var divergences: [Divergence]
 
     enum CodingKeys: String, CodingKey {
-        case schema, generatedAt, warning, error, tmuxReason, globs, manifestDir, units, divergences
+        case schema, generatedAt, warning, error, tmuxReason, globs, manifestDir, tokensToday, units, divergences
     }
 
     public init(from decoder: Decoder) throws {
@@ -135,8 +147,14 @@ public struct KitchenSnapshot: Equatable, Sendable, Decodable {
         tmuxReason = c.lenient(String.self, .tmuxReason) ?? ""
         globs = c.lenient(Int.self, .globs) ?? 0
         manifestDir = c.lenient(String.self, .manifestDir) ?? ""
+        tokensToday = c.lenient(Int.self, .tokensToday).map { max(0, $0) }
         units = c.lenient([KitchenUnit].self, .units) ?? []
         divergences = c.lenient([Divergence].self, .divergences) ?? []
+    }
+
+    /// Units that are alerting, worst first.
+    public var alerting: [KitchenUnit] {
+        units.filter(\.isAlerting).sorted { ($0.alert ?? 0) > ($1.alert ?? 0) }
     }
 
     public func count(_ status: UnitStatus) -> Int {

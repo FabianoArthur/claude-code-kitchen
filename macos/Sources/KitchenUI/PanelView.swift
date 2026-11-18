@@ -47,6 +47,10 @@ public struct PanelView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Kitchen").font(.headline)
                 Text(model.panel.summary).font(.caption).metadataStyle()
+                if let today = model.feed.snapshot?.tokensToday {
+                    Text("Tokens today: \(Formatting.tokens(today))").font(.caption).metadataStyle()
+                        .monospacedDigit()
+                }
             }
             Spacer()
             if model.refreshing {

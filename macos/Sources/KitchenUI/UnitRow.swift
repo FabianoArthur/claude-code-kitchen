@@ -14,7 +14,15 @@ struct UnitRow: View {
                 .frame(width: 14)
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 2) {
-                Text(unit.unit).font(.callout.weight(.medium)).lineLimit(1)
+                HStack(spacing: Theme.inner) {
+                    Text(unit.unit).font(.callout.weight(.medium)).lineLimit(1)
+                    if unit.isAlerting {
+                        Image(systemName: unit.alert == 2 ? "bell.badge.fill" : "bell.fill")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.attention)
+                            .help(unit.alert == 2 ? "Still waiting on you" : "Waiting on you for a while")
+                    }
+                }
                 if !metadata.isEmpty {
                     Text(metadata).font(.caption).metadataStyle().monospacedDigit().lineLimit(1)
                 }
@@ -45,7 +53,7 @@ struct UnitRow: View {
         .padding(Theme.row)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(.rect)
-        .kitchenSurface(radius: Theme.rowRadius)
+        .kitchenSurface(radius: Theme.rowRadius, tint: unit.isAlerting ? Theme.attention : nil)
         .onHover { hovering = $0 }
         .contextMenu { menu }
         .accessibilityElement(children: .ignore)
@@ -57,6 +65,7 @@ struct UnitRow: View {
         var parts = [unit.project]
         if let age = unit.ageText { parts.append(age) }
         if !unit.pr.isEmpty { parts.append("PR #\(unit.pr)") }
+        if let tokens = unit.tokens { parts.append("\(Formatting.tokens(tokens)) tokens") }
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 

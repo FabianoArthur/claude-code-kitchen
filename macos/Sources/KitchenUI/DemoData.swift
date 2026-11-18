@@ -9,15 +9,15 @@ public enum DemoData {
     public static let snapshot: KitchenSnapshot = {
         let json = #"""
         {"schema": 1, "generated_at": 1767276120, "warning": null, "error": null, "tmux_reason": "",
-         "globs": 1, "manifest_dir": "/demo/plans",
+         "globs": 1, "manifest_dir": "/demo/plans", "tokens_today": 1250000,
          "units": [
           {"unit": "rate-limit", "project": "demo-app", "status": "running", "branch": "feat/rate-limit",
            "session": "kitchen-rate-limit", "alive": true, "age_seconds": 754, "age_text": "12m",
-           "pane": "Running tests: 214 passed, 3 to go", "attach_command": "tmux attach -t '=kitchen-rate-limit'"},
+           "tokens": 48210, "alert": 0, "pane": "Running tests: 214 passed, 3 to go", "attach_command": "tmux attach -t '=kitchen-rate-limit'"},
           {"unit": "export-csv", "project": "demo-app", "status": "waiting", "reason": "pick the CSV dialect",
            "branch": "feat/export-csv", "pr": "43", "pr_link": "https://github.com/example/demo-app/pull/43",
            "session": "kitchen-export-csv", "alive": true, "age_seconds": 4320, "age_text": "1h12",
-           "pane": "Which CSV dialect should the export use?", "attach_command": "tmux attach -t '=kitchen-export-csv'"},
+           "tokens": 1830, "alert": 1, "pane": "Which CSV dialect should the export use?", "attach_command": "tmux attach -t '=kitchen-export-csv'"},
           {"unit": "search-api", "project": "demo-app", "status": "running", "branch": "feat/search-api",
            "session": "kitchen-search-api", "alive": true, "age_seconds": 1500, "age_text": "25m",
            "pane": "Writing src/search/index.ts", "attach_command": "tmux attach -t '=kitchen-search-api'"},
