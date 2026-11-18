@@ -142,6 +142,7 @@ Every key is optional; a bad value is ignored with a warning line at the top of 
 | `manifests` | `[]` | globs (`~` allowed) of manifest files. The widget has no way to guess where your plans live, so this is the one key you must set |
 | `done_markers` | `[".kitchen/done"]` | marker files, relative to the session's directory (or the unit's worktree), that mean "the unit closed" |
 | `stale_days` | `3` | a manifest with no active row (`🔄`/`⏳`/`⏸`) that was last modified more than this many days ago is ignored |
+| `alert_minutes` | `10` | a unit waiting on you (⏳ row, or a live pane asking a question) for longer than this gets `alert: 1` in `--json`; past three times this, `alert: 2`. On macOS one notification per level and unit; the state lives in `$TMPDIR` |
 | `max_age_days` | `0` | ignore **any** manifest older than this many days, even one with an open `⏳` row; `0` = never. Useful when abandoned batches keep the title orange |
 | `worktree_roots` | `[]` | directories that a **relative** worktree path in a manifest row (`feat/x · .worktrees/x`) is resolved against. Needed only to find `done` markers of units whose session is already dead |
 | `pr_urls` / `pr_url` | none | PR link template with `{n}` for the PR number, per manifest `project` or as the default. A full URL in the manifest's PR cell is used as is; only `http(s)` links are ever produced |

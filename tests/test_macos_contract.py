@@ -56,6 +56,7 @@ def scenario(mod, tmp_path):
     model = mod.build_model(cfg, rows, mod.list_sessions(cfg, run=run), NOW)
     for e in model["entries"]:
         e["tokens"] = {"rate-limit": 48210, "export-csv": 1830}.get(e["unit"])
+        e["alert"] = {"export-csv": 1}.get(e["unit"], 0)
     model["tokens_today"] = 1250000
     panes = {"kitchen-rate-limit": "Running tests: 214 passed, 3 to go",
              "kitchen-export-csv": "Which CSV dialect should the export use?"}
@@ -127,6 +128,14 @@ def test_token_fields_are_optional_numbers(tmp_path):
     assert s["units"]["tokens"] == ["null", "number"]   # a number for some units, null for the rest
     err = shape(error_scenario(mod))
     assert err["top"]["tokens_today"] == ["null"]        # no transcript data: null, not an error
+
+
+def test_alert_field_is_a_level_from_zero_to_two(tmp_path):
+    mod = load(PLUGIN)
+    data = scenario(mod, tmp_path)
+    assert shape(data)["units"]["alert"] == ["number"]
+    assert {u["alert"] for u in data["units"]} <= {0, 1, 2}
+    assert any(u["alert"] == 1 for u in data["units"])   # not only zeros
 
 
 def test_error_fixture_matches_the_script():

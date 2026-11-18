@@ -922,7 +922,7 @@ def test_main_json_collects_panes_of_live_units(mod, monkeypatch, tmp_path, caps
     monkeypatch.setattr(mod, "list_sessions", lambda cfg: {
         "ok": True, "reason": "",
         "sessions": [{"name": "kitchen-rate-limit", "created": int(time.time()), "path": str(tmp_path)}]})
-    monkeypatch.setattr(mod, "pane_summary", lambda cfg, s: "editing foo.py")
+    monkeypatch.setattr(mod, "pane_text", lambda cfg, s: "editing foo.py" + chr(10))
     assert mod.main(["--json"]) == 0
     by = {u["unit"]: u for u in json.loads(capsys.readouterr().out)["units"]}
     assert by["rate-limit"]["pane"] == "editing foo.py"
@@ -1061,3 +1061,177 @@ def test_main_json_includes_tokens_fields(mod, monkeypatch, tmp_path, capsys):
     assert mod.main(["--json"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert "tokens_today" in out and all("tokens" in u for u in out["units"])
+
+
+# ---------------------------------------------------------------- alerts: re-notify and escalate
+
+def _alert_model(mod, cfg, tmp_path):
+    """The English manifest: `export-csv` is the waiting row, `rate-limit` is running (live)."""
+    return _json_model(mod, cfg, tmp_path,
+                       sessions=[("kitchen-rate-limit", int(NOW) - 60, str(tmp_path))])
+
+
+def _recording_run(calls, returncode=0):
+    def run(argv, **kw):
+        calls.append((argv, kw))
+        return subprocess.CompletedProcess(argv, returncode, "", "")
+    return run
+
+
+def _alerts(mod, cfg, tmp_path, minutes_waited, calls, pane_waiting=None, state=None, platform="darwin"):
+    cfg, model = _alert_model(mod, cfg, tmp_path)
+    mod.add_alerts(model, cfg, NOW + minutes_waited * 60, pane_waiting=pane_waiting,
+                   state_path=state or tmp_path / "alerts.json", run=_recording_run(calls),
+                   platform=platform)
+    return cfg, {e["unit"]: e["alert"] for e in model["entries"]}
+
+
+def test_alert_levels_follow_the_waited_time(mod, cfg, tmp_path):
+    for waited, want in [(1, 0), (9.9, 0), (10.5, 1), (29, 1), (31, 2), (600, 2)]:
+        calls = []
+        _, alerts = _alerts(mod, cfg, tmp_path, waited, calls, state=tmp_path / f"s{waited}.json")
+        assert alerts["export-csv"] == want, waited
+        assert alerts["rate-limit"] == 0          # running and not asking: never alerts
+        assert alerts["login-fix"] == 0           # finished rows never alert
+
+
+def test_alert_minutes_is_configurable(mod, cfg, tmp_path):
+    calls = []
+    cfg = dict(cfg, alert_minutes=2)
+    _, alerts = _alerts(mod, cfg, tmp_path, 3, calls)
+    assert alerts["export-csv"] == 1
+    _, alerts = _alerts(mod, cfg, tmp_path, 7, calls, state=tmp_path / "other.json")
+    assert alerts["export-csv"] == 2
+
+
+def test_invalid_alert_minutes_falls_back_to_the_default(mod, tmp_path):
+    for bad in (0, -5, "ten", True):
+        path = tmp_path / "c.json"
+        path.write_text(json.dumps({"alert_minutes": bad}))
+        cfg, warning = mod.load_config(path)
+        assert cfg["alert_minutes"] == 10 and "alert_minutes" in warning
+
+
+def test_a_pane_asking_the_human_counts_as_waiting(mod, cfg, tmp_path):
+    calls = []
+    asking = {"kitchen-rate-limit": True}
+    _, quiet = _alerts(mod, cfg, tmp_path, 15, [], state=tmp_path / "a.json")
+    assert quiet["rate-limit"] == 0                      # control: the same age, no question
+    seeded = tmp_path / "b.json"                         # the question was first seen 15 min ago
+    seeded.write_text(json.dumps({"since": {"demo-app/rate-limit": NOW}, "sent": {}}))
+    _, alerts = _alerts(mod, cfg, tmp_path, 15, calls, pane_waiting=asking, state=seeded)
+    assert alerts["rate-limit"] == 1 and len(calls) >= 1
+
+
+def test_pane_is_waiting_reads_the_end_of_the_screen(mod):
+    assert mod.pane_is_waiting("work\nDo you want to proceed?\n 1. Yes\n 2. No\nEsc to cancel")
+    assert mod.pane_is_waiting("Overwrite? (y/n)\n")
+    assert not mod.pane_is_waiting("Running tests: 214 passed\n")
+    old = "Do you want to proceed?\n" + "\n".join(f"line {i}" for i in range(20))
+    assert not mod.pane_is_waiting(old)                  # an old prompt scrolled away
+
+
+def test_one_notification_per_level_and_unit(mod, cfg, tmp_path):
+    calls = []
+    state = tmp_path / "alerts.json"
+    _alerts(mod, cfg, tmp_path, 5, calls, state=state)
+    assert calls == []                                    # below N: silent
+    _alerts(mod, cfg, tmp_path, 11, calls, state=state)
+    assert len(calls) == 1                                # level 1
+    _alerts(mod, cfg, tmp_path, 12, calls, state=state)
+    assert len(calls) == 1                                # same level: not again
+    _alerts(mod, cfg, tmp_path, 31, calls, state=state)
+    assert len(calls) == 2                                # escalated to level 2
+    _alerts(mod, cfg, tmp_path, 40, calls, state=state)
+    assert len(calls) == 2
+    assert all(argv[0] == "/usr/bin/osascript" for argv, _ in calls)
+    assert "waiting on you" in calls[0][0][-1] and "still waiting" in calls[1][0][-1]
+
+
+def test_no_notification_off_macos_but_the_alert_is_set(mod, cfg, tmp_path):
+    calls = []
+    _, alerts = _alerts(mod, cfg, tmp_path, 40, calls, platform="linux")
+    assert alerts["export-csv"] == 2 and calls == []
+
+
+def test_state_forgets_a_unit_that_stopped_waiting(mod, cfg, tmp_path):
+    calls = []
+    state = tmp_path / "alerts.json"
+    _alerts(mod, cfg, tmp_path, 15, calls, state=state)
+    assert "demo-app/export-csv" in json.loads(state.read_text())["sent"]
+    write(tmp_path / "m-manifest.md", EN_MANIFEST.replace("⏳ waiting on human: pick the CSV dialect",
+                                                          "🔄 running"))
+    model = mod.build_model(cfg, mod.load_rows(cfg, NOW), mod.list_sessions(cfg, run=fake_run("")), NOW)
+    mod.add_alerts(model, cfg, NOW + 1200, state_path=state, run=_recording_run(calls), platform="darwin")
+    assert json.loads(state.read_text()) == {"since": {}, "sent": {}}
+
+
+def test_state_lives_in_tmpdir_and_a_corrupt_file_counts_as_empty(mod, tmp_path, monkeypatch):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    path = mod.alert_state_path()
+    assert path.parent == tmp_path
+    path.write_text("{not json")
+    assert mod.load_alert_state(path) == {"since": {}, "sent": {}}
+    path.write_text(json.dumps({"since": {"a": "x"}, "sent": {"a": 9}}))
+    assert mod.load_alert_state(path) == {"since": {}, "sent": {}}
+
+
+def test_to_json_carries_the_alert_field(mod, cfg, tmp_path):
+    cfg, model = _alert_model(mod, cfg, tmp_path)
+    assert all(u["alert"] == 0 for u in mod.to_json(model, cfg, NOW)["units"])
+    mod.add_alerts(model, cfg, NOW + 40 * 60, state_path=tmp_path / "s.json",
+                   run=_recording_run([]), platform="linux")
+    by = {u["unit"]: u for u in mod.to_json(model, cfg, NOW)["units"]}
+    assert by["export-csv"]["alert"] == 2 and by["rate-limit"]["alert"] == 0
+
+
+HOSTILE = 'x" & do shell script "touch /tmp/pwned" & "'
+
+
+def test_notification_text_goes_through_argv_only(mod):
+    calls = []
+    assert mod.notify(HOSTILE, 1, 10, run=_recording_run(calls), platform="darwin") is True
+    assert len(calls) == 1                                # positive control: osascript ran
+    argv, kw = calls[0]
+    assert isinstance(argv, list) and not kw.get("shell")
+    assert argv[0] == "/usr/bin/osascript"
+    assert argv[-1].startswith(HOSTILE + ": ")            # the whole name, as one argv item
+    script = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
+    assert "on run argv" in script
+    assert not any("do shell script" in line or HOSTILE in line for line in script)
+    assert argv[argv.index("--") + 1] == "Kitchen"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs a POSIX shell script as the fake osascript")
+def test_fake_osascript_receives_the_name_and_nothing_is_interpreted(mod, tmp_path, monkeypatch):
+    out = tmp_path / "argv.bin"
+    marker = tmp_path / "pwned"
+    fake = tmp_path / "osascript"
+    fake.write_text(f"#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > '{out}'\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(mod, "OSASCRIPT", str(fake))
+    name = f"x\" & do shell script \"touch {marker}\" & \"\n'$(touch {marker})'"
+    assert mod.notify(name, 2, 10, platform="darwin") is True
+    assert out.exists()                                   # the fake ran
+    args = out.read_bytes().split(b"\0")[:-1]
+    assert args[-1].decode().startswith(name + ": ")      # the whole name, quotes and newline intact
+    assert not marker.exists()                            # and nothing ran it
+
+
+def test_notify_survives_a_missing_or_failing_osascript(mod):
+    def boom(argv, **kw):
+        raise FileNotFoundError(argv[0])
+    assert mod.notify("u", 1, 10, run=boom, platform="darwin") is False
+    assert mod.notify("u", 1, 10, run=_recording_run([], returncode=1), platform="darwin") is False
+
+
+def test_main_json_includes_the_alert_field(mod, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    write(tmp_path / "m-manifest.md", EN_MANIFEST)
+    cfgfile = tmp_path / "c.json"
+    cfgfile.write_text(json.dumps({"manifests": [str(tmp_path / "*manifest*.md")],
+                                   "tmux": str(tmp_path / "no-such-tmux")}))
+    monkeypatch.setenv("KITCHEN_MENUBAR_CONFIG", str(cfgfile))
+    assert mod.main(["--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["units"] and all(u["alert"] in (0, 1, 2) for u in out["units"])
