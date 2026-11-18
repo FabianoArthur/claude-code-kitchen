@@ -22,7 +22,7 @@ Usage:
 Environment (for tests): KITCHEN_LOGS_DIR (default ~/.claude/kitchen-logs),
 KITCHEN_TMUX_SOCKET (tmux -L name; default: the default server).
 Files: <logs>/<ID>.pid (the registration), <logs>/end-<ID>.log (what happened).
-Exit codes: 0 done, 2 pid recycled or invalid id, 64 usage.
+Exit codes: 0 done, 2 pid recycled, invalid id or path outside the logs dir, 64 usage.
 """
 import json
 import os
@@ -51,11 +51,40 @@ def valid_id(unit_id):
     return bool(ID_RE.match(unit_id)) and unit_id not in (".", "..")
 
 
+def inside(path, base):
+    """True when the realpath of `path` is `base` or below it (both resolved)."""
+    real_path, real_base = os.path.realpath(path), os.path.realpath(base)
+    try:
+        return os.path.commonpath([real_path, real_base]) == real_base
+    except ValueError:
+        return False
+
+
+def unit_file(name):
+    """Resolved path of `name` in the logs dir, or None if it would land outside it."""
+    path = os.path.join(logs_dir(), name)
+    return os.path.realpath(path) if inside(path, logs_dir()) else None
+
+
+def refuse_paths(unit_id):
+    """EXIT_REFUSED (after printing why) unless the id is valid and both files stay in the logs dir."""
+    if not valid_id(unit_id):
+        print(f"invalid unit id: {unit_id!r}")
+        return EXIT_REFUSED
+    for name in (f"{unit_id}.pid", f"end-{unit_id}.log"):
+        if unit_file(name) is None:
+            print(f"refused: {name} resolves outside the logs directory")
+            return EXIT_REFUSED
+    return None
+
+
 def log(unit_id, msg):
-    os.makedirs(logs_dir(), exist_ok=True)
     line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
-    with open(os.path.join(logs_dir(), f"end-{unit_id}.log"), "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    path = unit_file(f"end-{unit_id}.log") if valid_id(unit_id) else None
+    if path:
+        os.makedirs(logs_dir(), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
     print(line)
 
 
@@ -165,25 +194,25 @@ def kill_tmux(unit_id):
 
 
 def register(unit_id, pid):
-    if not valid_id(unit_id):
-        print(f"invalid unit id: {unit_id!r}")
-        return EXIT_REFUSED
+    refused = refuse_paths(unit_id)
+    if refused is not None:
+        return refused
     info = proc_info(pid)
     if not info:
         log(unit_id, f"register: pid {pid} does not exist")
         return 1
     os.makedirs(logs_dir(), exist_ok=True)
-    with open(os.path.join(logs_dir(), f"{unit_id}.pid"), "w", encoding="utf-8") as f:
+    with open(unit_file(f"{unit_id}.pid"), "w", encoding="utf-8") as f:
         json.dump({"pid": int(pid), "comm": info[0], "lstart": info[1]}, f)
     log(unit_id, f"registered pid={pid} comm={info[0]} lstart={info[1]}")
     return EXIT_OK
 
 
 def end(unit_id, grace=GRACE_SECONDS):
-    if not valid_id(unit_id):
-        print(f"invalid unit id: {unit_id!r}")
-        return EXIT_REFUSED
-    path = os.path.join(logs_dir(), f"{unit_id}.pid")
+    refused = refuse_paths(unit_id)
+    if refused is not None:
+        return refused
+    path = unit_file(f"{unit_id}.pid")
     rc = EXIT_OK
     try:
         with open(path, encoding="utf-8") as f:
