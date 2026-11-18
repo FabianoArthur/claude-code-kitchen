@@ -25,8 +25,14 @@ default paths (`~/.claude/kitchen-guard.json`, `~/.claude/kitchen-logs/`).
 
 Usage:
     python3 guard.py < event.json
+    python3 guard.py report [--days 7] [--log-dir DIR] [--json]
     python3 guard.py --selftest
+
+`report` is the deterministic half of the guard analyst (brigade/guard-analyst.md): it counts the
+log by rule and decision over the last N days and lists a few real cases per rule. It only reads.
 """
+import argparse
+import datetime
 import json
 import os
 import re
@@ -198,6 +204,108 @@ def main(env=None, stdin=None, stderr=None) -> int:
         return 2
 
 
+REPORT_SAMPLES = 3
+_LOG_NAME = re.compile(r"^guard(-\d{4}-\d{2}-\d{2})?\.jsonl$")
+_SAMPLED = ("deny", "would_deny")
+
+
+def _parse_ts(value):
+    """Epoch seconds of a log timestamp, or None when it is missing or malformed."""
+    try:
+        return datetime.datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%S%z").timestamp()
+    except ValueError:
+        return None
+
+
+def build_report(directory: str, days: int, stamp: float) -> dict:
+    """Count the log lines of the last `days` days by rule and decision.
+
+    Reads `guard.jsonl` and every `guard-YYYY-MM-DD.jsonl` in `directory`. A line that is not
+    valid JSON, not an object, or has no usable `ts` is counted under `skipped`, never raised.
+    Each rule keeps up to REPORT_SAMPLES `deny` / `would_deny` cases with file and line number.
+    """
+    cutoff = stamp - days * 86400
+    report = {"days": days, "files": [], "lines": 0, "skipped": 0, "decisions": {}, "rules": {}}
+    try:
+        names = sorted(n for n in os.listdir(directory) if _LOG_NAME.match(n))
+    except OSError:
+        return report
+    for name in names:
+        report["files"].append(name)
+        try:
+            handle = open(os.path.join(directory, name), encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with handle:
+            for number, raw in enumerate(handle, 1):
+                if not raw.strip():
+                    continue
+                try:
+                    line = json.loads(raw)
+                except ValueError:
+                    line = None
+                when = _parse_ts(line.get("ts")) if isinstance(line, dict) else None
+                if when is None:
+                    report["skipped"] += 1
+                    continue
+                if when < cutoff:
+                    continue
+                report["lines"] += 1
+                rule = str(line.get("rule") or "(none)")
+                decision = str(line.get("decision") or "(none)")
+                report["decisions"][decision] = report["decisions"].get(decision, 0) + 1
+                entry = report["rules"].setdefault(rule, {"counts": {}, "samples": []})
+                entry["counts"][decision] = entry["counts"].get(decision, 0) + 1
+                if decision in _SAMPLED and len(entry["samples"]) < REPORT_SAMPLES:
+                    entry["samples"].append(
+                        {
+                            "file": name,
+                            "line": number,
+                            "ts": line.get("ts"),
+                            "unit": str(line.get("unit", "")),
+                            "tool": str(line.get("tool", "")),
+                            "decision": decision,
+                            "detail": str(line.get("detail", ""))[:FIELD_LIMIT],
+                        }
+                    )
+    return report
+
+
+def format_report(report: dict) -> str:
+    out = [
+        f"guard report: last {report['days']} days, {report['lines']} decisions "
+        f"in {len(report['files'])} file(s), {report['skipped']} line(s) skipped",
+        "decisions: " + (", ".join(f"{k}={v}" for k, v in sorted(report["decisions"].items())) or "none"),
+        "",
+    ]
+    ranked = sorted(report["rules"].items(), key=lambda kv: (-sum(kv[1]["counts"].values()), kv[0]))
+    for rule, entry in ranked:
+        counts = ", ".join(f"{k}={v}" for k, v in sorted(entry["counts"].items()))
+        out.append(f"{rule}: {counts}")
+        for case in entry["samples"]:
+            out.append(
+                f"  - {case['file']}:{case['line']} {case['decision']} unit={case['unit']} "
+                f"{case['tool']}: {case['detail']}"
+            )
+    return "\n".join(out) + "\n"
+
+
+def report_main(argv, env=None, out=None) -> int:
+    env = os.environ if env is None else env
+    out = sys.stdout if out is None else out
+    parser = argparse.ArgumentParser(prog="guard.py report", description="Count guard decisions by rule.")
+    parser.add_argument("--days", type=int, default=7, help="window in days (default 7)")
+    parser.add_argument("--log-dir", help="log folder (default: KITCHEN_LOG_DIR or ~/.claude/kitchen-logs)")
+    parser.add_argument("--json", action="store_true", help="print JSON instead of text")
+    args = parser.parse_args(argv)
+    if args.days < 1:
+        parser.error("--days must be at least 1")
+    directory = args.log_dir or env.get("KITCHEN_LOG_DIR") or os.path.join(_home_claude(env), "kitchen-logs")
+    report = build_report(directory, args.days, now())
+    out.write(json.dumps(report, indent=2, ensure_ascii=False) + "\n" if args.json else format_report(report))
+    return 0
+
+
 def selftest() -> int:
     import io
     import subprocess
@@ -262,11 +370,27 @@ def selftest() -> int:
             text = handle.read()
         check("a token is masked in the log", secret not in text)
         check("Write logs path and size, not content", "BODY" not in text and "/tmp/x (4 bytes)" in text)
+        fixture = os.path.join(tmp, "fixture")
+        os.makedirs(fixture)
+        stamp = now()
+
+        def row(days_ago, rule, decision):
+            ts = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(stamp - days_ago * 86400))
+            return json.dumps({"ts": ts, "unit": "U", "tool": "Bash", "rule": rule, "decision": decision})
+
+        rows = [row(1, "push", "deny"), row(1, "push", "deny"), row(1, "", "allow"), "{broken", row(30, "push", "deny")]
+        with open(os.path.join(fixture, "guard.jsonl"), "w", encoding="utf-8") as handle:
+            handle.write("\n".join(rows) + "\n")
+        result = build_report(fixture, 7, stamp)
+        check("report counts by rule and decision", result["rules"]["push"]["counts"] == {"deny": 2})
+        check("report skips old and broken lines", result["lines"] == 3 and result["skipped"] == 1)
     print("\nselftest:", "FAILED" if failures else "ALL PASSED")
     return 1 if failures else 0
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["report"]:
+        sys.exit(report_main(sys.argv[2:]))
     if "--selftest" in sys.argv[1:]:
         sys.exit(selftest())
     sys.exit(main())
