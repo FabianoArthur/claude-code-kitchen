@@ -2,8 +2,13 @@
 """
 guard — the PreToolUse hook that fences the kitchen's units.
 
-It only acts inside a kitchen session (`KITCHEN_SESSION=1`); everywhere else it exits 0 without
-reading stdin or writing a log, so installing it never touches the waiter's own session.
+It only acts inside a kitchen session, so installing it never touches the waiter's own session.
+A session is kitchen when `KITCHEN_SESSION=1`, or, without the variable, when the hook event's
+`cwd` is inside the worktree of a unit snapshot (or under `~/.claude/kitchen-runs/`): a child
+process that wiped the environment does not switch the guard off. Everywhere else it exits 0
+without writing a log (outside the variable case it reads stdin only to look at the `cwd`).
+The unit id (`KITCHEN_UNIT`) is trusted only when that cwd is inside the unit's own worktree;
+otherwise the strictest case applies (see guard_rules.py).
 
 Input: the hook JSON on stdin (`tool_name`, `tool_input`). Output: exit 0 (allow) or exit 2 (deny,
 reason on stderr). One jsonl line per call goes to `guard.jsonl`:
@@ -168,16 +173,22 @@ def evaluate(event: dict, config: dict, env=None):
 
 def main(env=None, stdin=None, stderr=None) -> int:
     env = os.environ if env is None else env
-    if env.get("KITCHEN_SESSION") != "1":
-        return 0
     stdin = sys.stdin if stdin is None else stdin
     stderr = sys.stderr if stderr is None else stderr
     mode, tool = DEFAULT_MODE, ""
+    preloaded = None
+    if env.get("KITCHEN_SESSION") != "1":
+        try:  # no variable: kitchen only if the event's cwd is inside a unit's worktree
+            preloaded = json.load(stdin)
+            if not isinstance(preloaded, dict) or not guard_rules.cwd_in_kitchen(env, preloaded.get("cwd")):
+                return 0
+        except Exception:
+            return 0  # nothing says this is the kitchen: stay out of the waiter's way
     try:
         config = load_config(env)
         mode = resolve_mode(config)
         try:
-            event = json.load(stdin)
+            event = preloaded if preloaded is not None else json.load(stdin)
             if not isinstance(event, dict):
                 raise ValueError("event is not an object")
         except ValueError as exc:
