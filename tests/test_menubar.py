@@ -60,6 +60,15 @@ def mod():
 def isolated_config(monkeypatch, tmp_path):
     """Never read the real user config: point it at a file that does not exist."""
     monkeypatch.setenv("KITCHEN_MENUBAR_CONFIG", str(tmp_path / "no-config.json"))
+    if not hasattr(os, "getuid"):  # Windows: st_uid is 0 there, so a fake uid 0 matches
+        monkeypatch.setattr(os, "getuid", lambda: 0, raising=False)
+        real_fstat = os.fstat  # keep the original: the fake must not call itself
+
+        def fstat_private(fd):
+            st = real_fstat(fd)  # Windows reports 0666: show owner-only bits instead
+            return os.stat_result((st.st_mode & ~0o077,) + tuple(st)[1:])
+
+        monkeypatch.setattr(os, "fstat", fstat_private)
     # tokens read transcripts: never the real ones
     monkeypatch.setenv("KITCHEN_PROJECTS_DIR", str(tmp_path / "no-projects"))
 
@@ -1119,6 +1128,7 @@ def test_a_pane_asking_the_human_counts_as_waiting(mod, cfg, tmp_path):
     assert quiet["rate-limit"] == 0                      # control: the same age, no question
     seeded = tmp_path / "b.json"                         # the question was first seen 15 min ago
     seeded.write_text(json.dumps({"since": {"demo-app/rate-limit": NOW}, "sent": {}}))
+    seeded.chmod(0o600)                                  # the state loader rejects group/other bits
     _, alerts = _alerts(mod, cfg, tmp_path, 15, calls, pane_waiting=asking, state=seeded)
     assert alerts["rate-limit"] == 1 and len(calls) >= 1
 
@@ -1166,14 +1176,92 @@ def test_state_forgets_a_unit_that_stopped_waiting(mod, cfg, tmp_path):
     assert json.loads(state.read_text()) == {"since": {}, "sent": {}}
 
 
-def test_state_lives_in_tmpdir_and_a_corrupt_file_counts_as_empty(mod, tmp_path, monkeypatch):
-    monkeypatch.setenv("TMPDIR", str(tmp_path))
+def _alert_model_state(mod, cfg, tmp_path, state, minutes_waited, calls):
+    cfg, model = _alert_model(mod, cfg, tmp_path)
+    mod.add_alerts(model, cfg, NOW + minutes_waited * 60, state_path=state,
+                   run=_recording_run(calls), platform="darwin")
+    return {e["unit"]: e["alert"] for e in model["entries"]}
+
+
+def test_state_lives_in_the_private_kitchen_logs_folder(mod, tmp_path, monkeypatch):
+    logs = tmp_path / "logs"
+    monkeypatch.setenv("KITCHEN_LOGS_DIR", str(logs))
     path = mod.alert_state_path()
-    assert path.parent == tmp_path
+    assert path.parent == logs
+    assert not logs.exists()
+    mod.save_alert_state(path, {"since": {"p/u": 5}, "sent": {"p/u": 1}})
+    assert mod.load_alert_state(path) == {"since": {"p/u": 5}, "sent": {"p/u": 1}}
+    assert (logs.stat().st_mode & 0o777) == 0o700
+    assert (path.stat().st_mode & 0o777) == 0o600
+    assert [p.name for p in logs.iterdir()] == [path.name]  # no temporary file left behind
+
+
+def test_corrupt_or_malformed_state_counts_as_empty(mod, tmp_path):
+    path = tmp_path / "s.json"
+    empty = {"since": {}, "sent": {}}
     path.write_text("{not json")
-    assert mod.load_alert_state(path) == {"since": {}, "sent": {}}
+    path.chmod(0o600)
+    assert mod.load_alert_state(path) == empty
     path.write_text(json.dumps({"since": {"a": "x"}, "sent": {"a": 9}}))
+    assert mod.load_alert_state(path) == empty
+    assert mod.load_alert_state(tmp_path / "missing.json") == empty
+
+
+def test_a_symlink_in_place_of_the_state_is_not_followed(mod, tmp_path):
+    good = {"since": {"p/u": 5}, "sent": {"p/u": 2}}
+    path = tmp_path / "state.json"
+    # control: without the symlink the same path is written and read back
+    mod.save_alert_state(path, good)
+    assert mod.load_alert_state(path) == good
+    path.unlink()
+    target = tmp_path / "elsewhere.json"
+    target.write_text(json.dumps(good))
+    target.chmod(0o600)
+    path.symlink_to(target)
     assert mod.load_alert_state(path) == {"since": {}, "sent": {}}
+    mod.save_alert_state(path, {"since": {}, "sent": {}})
+    assert json.loads(target.read_text()) == good  # nothing was written through the link
+
+
+def test_a_state_with_the_wrong_mode_or_owner_counts_as_empty(mod, tmp_path, monkeypatch):
+    good = {"since": {"p/u": 5}, "sent": {"p/u": 1}}
+    path = tmp_path / "state.json"
+    mod.save_alert_state(path, good)
+    assert mod.load_alert_state(path) == good  # control: the private file is accepted
+    path.chmod(0o644)
+    assert mod.load_alert_state(path) == {"since": {}, "sent": {}}
+    path.chmod(0o600)
+    assert mod.load_alert_state(path) == good
+    other_uid = os.getuid() + 1  # read before patching: mod.os is the same module object
+    monkeypatch.setattr(mod.os, "getuid", lambda: other_uid)
+    assert mod.load_alert_state(path) == {"since": {}, "sent": {}}
+
+
+def test_an_unreadable_state_makes_the_alert_fire_again(mod, cfg, tmp_path):
+    state = tmp_path / "state.json"
+    calls = []
+    assert _alert_model_state(mod, cfg, tmp_path, state, 11, calls)["export-csv"] == 1
+    assert len(calls) == 1
+    calls.clear()
+    _alert_model_state(mod, cfg, tmp_path, state, 12, calls)
+    assert calls == []  # control: the saved state suppresses the repeat
+    state.write_text("{broken")
+    state.chmod(0o600)
+    _alert_model_state(mod, cfg, tmp_path, state, 13, calls)
+    assert len(calls) == 1  # unreadable state: the current level is announced again
+
+
+def test_nothing_is_left_in_tmpdir(mod, cfg, tmp_path, monkeypatch):
+    tmpdir = tmp_path / "tmp"
+    tmpdir.mkdir()
+    logs = tmp_path / "logs"
+    monkeypatch.setenv("TMPDIR", str(tmpdir))
+    monkeypatch.setenv("KITCHEN_LOGS_DIR", str(logs))
+    monkeypatch.setattr(mod.tempfile, "tempdir", None)
+    cfg, model = _alert_model(mod, cfg, tmp_path)
+    mod.add_alerts(model, cfg, NOW + 11 * 60, run=_recording_run([]), platform="darwin")
+    assert (logs / "menubar-alerts.json").is_file()  # control: the state went to the new place
+    assert list(tmpdir.iterdir()) == []
 
 
 def test_to_json_carries_the_alert_field(mod, cfg, tmp_path):
@@ -1226,7 +1314,7 @@ def test_notify_survives_a_missing_or_failing_osascript(mod):
 
 
 def test_main_json_includes_the_alert_field(mod, monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("KITCHEN_LOGS_DIR", str(tmp_path / "logs"))
     write(tmp_path / "m-manifest.md", EN_MANIFEST)
     cfgfile = tmp_path / "c.json"
     cfgfile.write_text(json.dumps({"manifests": [str(tmp_path / "*manifest*.md")],
