@@ -35,7 +35,8 @@
       "recent": true,
       "pane": "Running tests: 214 passed, 3 to go",
       "attach_command": "tmux attach -t '=kitchen-rate-limit'",
-      "tokens": 48210
+      "tokens": 48210,
+      "alert": 0
     },
     {
       "unit": "export-csv",
@@ -55,7 +56,8 @@
       "recent": true,
       "pane": "Which CSV dialect should the export use?",
       "attach_command": "tmux attach -t '=kitchen-export-csv'",
-      "tokens": 1830
+      "tokens": 1830,
+      "alert": 1
     },
     {
       "unit": "search-api",
@@ -75,7 +77,8 @@
       "recent": true,
       "pane": "",
       "attach_command": null,
-      "tokens": null
+      "tokens": null,
+      "alert": 0
     },
     {
       "unit": "login-fix",
@@ -95,7 +98,8 @@
       "recent": true,
       "pane": "",
       "attach_command": null,
-      "tokens": null
+      "tokens": null,
+      "alert": 0
     },
     {
       "unit": "old-idea",
@@ -115,7 +119,8 @@
       "recent": true,
       "pane": "",
       "attach_command": null,
-      "tokens": null
+      "tokens": null,
+      "alert": 0
     },
     {
       "unit": "new-ui",
@@ -135,7 +140,8 @@
       "recent": true,
       "pane": "",
       "attach_command": null,
-      "tokens": null
+      "tokens": null,
+      "alert": 0
     }
   ],
   "divergences": [

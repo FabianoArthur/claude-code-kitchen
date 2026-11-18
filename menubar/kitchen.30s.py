@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import glob
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -69,6 +70,7 @@ DEFAULTS = {
     "pr_urls": {},                   # same, per manifest project name
     "terminal": "Terminal",          # Terminal | iTerm | Ghostty
     "tmux": "",                      # path to tmux; empty = look it up
+    "alert_minutes": 10,             # a unit waiting longer than this raises alert 1; 3x -> alert 2
 }
 
 # 🧹 "harvested" is the post-merge state some manifests use once a unit is cleaned up
@@ -95,6 +97,10 @@ PR_URL_IN_CELL = re.compile(r"https?://[^\s)>\]|]+")
 PR_NUMBER = re.compile(r"#(\d+)")
 PR_PATH = re.compile(r"/pull/(\d+)")
 # Claude Code's own screen furniture: hint line, mode line, the spinner ("✶ Wandering… (8m)")
+# A pane that is asking the human something (permission prompt, y/n, "press enter")
+PANE_WAITING = re.compile(r"do you want to|\(y/n\)|\[y/n\]|esc to cancel|press enter to continue"
+                          r"|waiting for (your )?(input|approval)", re.I)
+OSASCRIPT = "/usr/bin/osascript"
 CHROME = re.compile(r"^\W*(\?\s*)?for shortcuts|^\W*⏵⏵|^\W*(accept edits|bypass permissions)"
                     r"|^[✶✻✽✢✳·*]\s", re.I)
 
@@ -118,8 +124,6 @@ def _str_list(value):
 
 def load_config(path):
     """(config, warning). A missing file is normal; a bad one falls back to the defaults."""
-    import json
-
     cfg = {k: (list(v) if isinstance(v, list) else dict(v) if isinstance(v, dict) else v)
            for k, v in DEFAULTS.items()}
     path = Path(path)
@@ -148,8 +152,9 @@ def load_config(path):
                 cfg[key] = None
             else:
                 bad.append(key)
-        elif key in ("stale_days", "max_age_days"):
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        elif key in ("stale_days", "max_age_days", "alert_minutes"):
+            numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+            if numeric and (value > 0 if key == "alert_minutes" else value >= 0):
                 cfg[key] = value
             else:
                 bad.append(key)
@@ -356,16 +361,29 @@ def clean(text, limit=0):
     return text
 
 
-def pane_summary(cfg, session, run=subprocess.run):
-    """The last useful line on the session's screen, or '' if there is none."""
+def pane_text(cfg, session, run=subprocess.run):
+    """The session's visible screen as text, or '' when tmux cannot say."""
     try:
         p = run(_tmux(cfg, "capture-pane", "-p", "-J", "-t", f"={session}:"),
                 capture_output=True, text=True, timeout=TMUX_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return ""
-    if p.returncode != 0:
-        return ""
-    for line in reversed((p.stdout or "").splitlines()):
+    return (p.stdout or "") if p.returncode == 0 else ""
+
+
+def pane_is_waiting(text):
+    """True when the last lines of a screen look like a question to the human."""
+    tail = [ln for ln in text.splitlines() if ln.strip()][-8:]
+    return bool(PANE_WAITING.search("\n".join(tail)))
+
+
+def pane_summary(cfg, session, run=subprocess.run):
+    """The last useful line on the session's screen, or '' if there is none."""
+    return summarize_pane(pane_text(cfg, session, run))
+
+
+def summarize_pane(text):
+    for line in reversed(text.splitlines()):
         line = line.strip().strip("│┃|").strip()
         if not re.search(r"[A-Za-z0-9]", line) or CHROME.search(line):
             continue
@@ -541,6 +559,96 @@ def fmt_tokens(n):
 
 
 # ------------------------------------------------------------------ SwiftBar output
+
+# ------------------------------------------------------------------ alerts (re-notify, escalate)
+
+def alert_state_path():
+    base = os.environ.get("TMPDIR") or "/tmp"
+    return Path(base) / f"kitchen-menubar-alerts-{getattr(os, 'getuid', lambda: 0)()}.json"
+
+
+def load_alert_state(path):
+    """{"since": {key: ts}, "sent": {key: level}}; anything unreadable counts as empty."""
+    empty = {"since": {}, "sent": {}}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        since, sent = data["since"], data["sent"]
+        if not (isinstance(since, dict) and isinstance(sent, dict)):
+            return empty
+        return {"since": {k: v for k, v in since.items() if isinstance(v, (int, float))},
+                "sent": {k: v for k, v in sent.items() if v in (1, 2)}}
+    except (OSError, ValueError, KeyError, TypeError):
+        return empty
+
+
+def save_alert_state(path, state):
+    try:
+        tmp = Path(str(path) + ".tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def alert_level(waited, minutes):
+    """0 up to N minutes, 1 above N, 2 above 3N."""
+    if waited > 3 * minutes * 60:
+        return 2
+    return 1 if waited > minutes * 60 else 0
+
+
+def notify(unit, level, minutes, run=subprocess.run, platform=None):
+    """macOS notification through osascript. The text travels as argv (`on run argv`), never
+    inside the script, so a unit name with quotes or `do shell script` is only ever data.
+    Off macOS nothing is sent. Returns True when osascript ran and succeeded."""
+    if (platform or sys.platform) != "darwin":
+        return False
+    detail = (f"waiting on you for over {minutes} min" if level == 1
+              else f"still waiting, over {3 * minutes} min")
+    argv = [OSASCRIPT, "-e", "on run argv",
+            "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+            "-e", "end run", "--", "Kitchen", f"{unit}: {detail}"]
+    try:
+        return run(argv, capture_output=True, text=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def add_alerts(model, cfg, now, pane_waiting=None, state_path=None, run=subprocess.run,
+               platform=None):
+    """Set entry["alert"] (0, 1 or 2) from how long a unit has waited on the human.
+
+    A unit waits when its row is waiting, or when it is alive, not done, and its pane asks a
+    question. The clock starts the first time we see it waiting (kept in the state file under
+    $TMPDIR); for waiting rows the manifest mtime counts too, whichever is older. A
+    notification goes out once per level and unit; the state forgets a unit once it stops
+    waiting."""
+    pane_waiting = pane_waiting or {}
+    minutes = cfg.get("alert_minutes") or DEFAULTS["alert_minutes"]
+    path = state_path or alert_state_path()
+    state = load_alert_state(path)
+    since, sent = {}, {}
+    for e in model["entries"]:
+        key = f"{e['project']}/{e['unit']}"
+        asking = bool(e["session"]) and e["alive"] and pane_waiting.get(e["session"], False)
+        waiting = e["status"] == "waiting" or (asking and e["status"] == "running")
+        if not waiting or e["done"]:
+            e["alert"] = 0
+            continue
+        start = state["since"].get(key, now)
+        if e["status"] == "waiting" and e["mtime"] is not None:
+            start = min(start, e["mtime"])
+        since[key] = start
+        level = alert_level(now - start, minutes)
+        e["alert"] = level
+        done_level = state["sent"].get(key, 0)
+        if level > done_level:
+            notify(e["unit"], level, minutes, run=run, platform=platform)
+            done_level = level
+        if done_level:
+            sent[key] = done_level
+    save_alert_state(path, {"since": since, "sent": sent})
+
 
 def _q(value):
     value = str(value).replace('"', "")
@@ -724,6 +832,7 @@ def to_json(model, cfg, now, warning=None, panes=None, error=None):
             "pane": (panes.get(e["session"]) or "") if e["session"] else "",
             "attach_command": _attach_or_none(cfg, e["session"]) if e["alive"] else None,
             "tokens": e.get("tokens"),
+            "alert": e.get("alert", 0),
         })
     divergences = [{"kind": d["kind"], "unit": d["unit"], "session": d["session"], "text": d["text"],
                     "attach_command": _attach_or_none(cfg, d["session"])}
@@ -796,18 +905,22 @@ def collect(cfg, now):
         add_tokens(model, paths)
     except Exception:  # tokens are optional
         pass
-    panes = {}
+    panes, asking = {}, {}
     for e in model["entries"]:
         if len(panes) >= MAX_PANES:
             break
         if e["alive"] and not e["done"] and e["status"] in ("running", "waiting"):
-            panes[e["session"]] = pane_summary(cfg, e["session"])
+            text = pane_text(cfg, e["session"])
+            panes[e["session"]] = summarize_pane(text)
+            asking[e["session"]] = pane_is_waiting(text)
+    try:
+        add_alerts(model, cfg, now, asking)
+    except Exception:  # alerts are an extra too
+        pass
     return model, panes
 
 
 def main(argv):
-    import json
-
     cfg, warning = load_config(config_path())
     now = time.time()
     if argv == ["--json"]:
