@@ -9,7 +9,7 @@ more. So the waiter reads the doc ONCE, at dispatch, and writes the permissions 
 
 Usage:
     python3 unit_snapshot.py write <doc> --unit ID --worktree PATH --manifest PATH
-                             [--branch B] [--launch FILE] [--prompt FILE]
+                             [--branch B] [--branch-regex RE] [--launch FILE] [--prompt FILE]
                              [--approve-escalation]
     python3 unit_snapshot.py show ID
     python3 unit_snapshot.py --selftest
@@ -20,12 +20,21 @@ is not valid JSON, has `schema` != 1 or names a different unit. Callers treat No
 
 `KITCHEN_UNITS_DIR` replaces the default folder (tests use it).
 
+Validation (exit 2, nothing written, the stderr line names the field): `model_exec` must be
+`haiku`, `sonnet` or `opus`; `branch` must match `--branch-regex` (the adapter's
+`branch_regex`; the default is the pattern of the execute skill, Step 2); every `mcp` name
+must match the tool-name pattern of `mcp_config.py`; every `files` path (the list under the
+doc's `## Blast radius` heading) must be relative to the repo root, without `..`. No field
+may hold a control character (ESC included).
+
 Escalation: rewriting an existing snapshot is refused (exit 3, difference on stderr,
-nothing written) when it widens the unit's authority: `allow_config` false -> true, a new
+nothing written) when it widens the unit's authority: `allow_config` or `allow_ci` false ->
+true, a new `files` path, a new
 `mcp` server, `proof` or `double_proof` true -> false, or a change of `model_exec`,
 `worktree`, `task_doc`, `manifest` or `branch`. Only the waiter passes
 `--approve-escalation`, after showing the difference to the human. Reductions and changes
-of `sha256`, `written_at` or the file hashes pass.
+of `sha256`, `written_at` or the file hashes pass. The difference is printed one field per
+line, as `name: ascii(old) -> ascii(new)`, with no free text taken from the doc.
 
 Exit: 0 = ok · 2 = error · 3 = escalation refused
 """
@@ -42,6 +51,12 @@ SCHEMA = 1
 ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 TRUE_WORDS = {"yes", "true"}
 # Fields whose change, in any direction, counts as an escalation.
+MODELS = ("haiku", "sonnet", "opus")
+DEFAULT_BRANCH_RE = r"^(feat|fix|perf|refactor|chore|docs)/[a-zA-Z0-9][a-zA-Z0-9._/-]*$"
+MCP_NAME_RE = re.compile(r"^mcp__[A-Za-z0-9_-]+__([A-Za-z0-9_-]+|\*)$")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+NOTE_RE = re.compile(r"\s+(\(.*\)|\[new\])\s*$")
 IDENTITY_FIELDS = ("model_exec", "worktree", "task_doc", "manifest", "branch")
 
 
@@ -134,7 +149,65 @@ def as_list(value):
     return out
 
 
-def build(doc, unit_id, worktree, manifest, branch=None, launch=None, prompt=None):
+def blast_radius_files(text):
+    """Paths listed under the doc's `## Blast radius` heading (`- layer: path  (note) [new]`)."""
+    out, inside, level = [], False, 0
+    for line in text.lstrip("﻿").splitlines():
+        head = HEADING_RE.match(line)
+        if head:
+            if inside and len(head.group(1)) <= level:
+                break
+            if not inside and head.group(2).strip().lower() == "blast radius":
+                inside, level = True, len(head.group(1))
+            continue
+        item = re.match(r"^\s*[-*]\s+(.*?)\s*$", line) if inside else None
+        if not item:
+            continue
+        body = item.group(1)
+        layer = re.match(r"^[\w.-]+:\s+(.*)$", body)
+        if layer:
+            body = layer.group(1)
+        for _ in range(2):  # a trailing note and a [new] marker may both be present
+            body = NOTE_RE.sub("", body)
+        body = body.strip().strip("`")
+        if body and body not in out:
+            out.append(body)
+    return out
+
+
+def _clean(field, value):
+    if CONTROL_RE.search(value):
+        raise SnapshotError(f"{field}: control character in value {ascii(value)}")
+    return value
+
+
+def validate(model, branch, mcp, files, branch_regex=None):
+    """Raises SnapshotError, naming the field, for a value outside the rules."""
+    _clean("model_exec", model)
+    if model not in MODELS:
+        raise SnapshotError(f"model_exec: {ascii(model)} is not one of {', '.join(MODELS)}")
+    if branch:
+        _clean("branch", branch)
+        try:
+            pattern = re.compile(branch_regex or DEFAULT_BRANCH_RE)
+        except re.error as exc:
+            raise SnapshotError(f"branch: invalid --branch-regex ({exc})") from None
+        if not pattern.search(branch):
+            raise SnapshotError(f"branch: {ascii(branch)} does not match the branch regex")
+    for name in mcp:
+        _clean("mcp", name)
+        if not MCP_NAME_RE.match(name):
+            raise SnapshotError(f"mcp: {ascii(name)} is not a valid tool name")
+    for path in files:
+        _clean("files", path)
+        parts = path.replace("\\", "/").split("/")
+        if path.startswith(("/", "~", "\\")) or re.match(r"^[A-Za-z]:", path) or ".." in parts:
+            raise SnapshotError(f"files: {ascii(path)} must be relative to the repo root, "
+                                "without '..'")
+
+
+def build(doc, unit_id, worktree, manifest, branch=None, launch=None, prompt=None,
+          branch_regex=None):
     doc = Path(doc)
     if not doc.is_file():
         raise SnapshotError(f"task doc not found: {doc}")
@@ -143,6 +216,10 @@ def build(doc, unit_id, worktree, manifest, branch=None, launch=None, prompt=Non
         if path is not None and not Path(path).is_file():
             raise SnapshotError(f"--{name} file not found: {path}")
     model = fields.get("model_exec")
+    model = _unquote(model) if isinstance(model, str) else ""
+    mcp = as_list(fields.get("mcp"))
+    files = blast_radius_files(doc.read_text(encoding="utf-8"))
+    validate(model, branch or "", mcp, files, branch_regex)
     return {
         "schema": SCHEMA,
         "unit": check_id(unit_id),
@@ -151,11 +228,13 @@ def build(doc, unit_id, worktree, manifest, branch=None, launch=None, prompt=Non
         "manifest": os.path.realpath(manifest),
         "written_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sha256": sha256_file(doc),
-        "model_exec": _unquote(model) if isinstance(model, str) else "",
+        "model_exec": model,
         "proof": as_bool(fields.get("proof")),
         "double_proof": as_bool(fields.get("double_proof")),
         "allow_config": as_bool(fields.get("allow_config")),
-        "mcp": as_list(fields.get("mcp")),
+        "allow_ci": as_bool(fields.get("allow_ci")),
+        "mcp": mcp,
+        "files": files,
         "branch": branch or "",
         "launch_sha256": sha256_file(launch) if launch else None,
         "prompt_sha256": sha256_file(prompt) if prompt else None,
@@ -165,17 +244,19 @@ def build(doc, unit_id, worktree, manifest, branch=None, launch=None, prompt=Non
 def escalations(old, new):
     """Human-readable lines for each way `new` widens the authority of `old`."""
     out = []
-    if not old.get("allow_config") and new.get("allow_config"):
-        out.append("allow_config: false -> true")
-    added = [s for s in new.get("mcp", []) if s not in old.get("mcp", [])]
-    if added:
-        out.append(f"mcp: new server(s) {', '.join(added)}")
+    for key in ("allow_config", "allow_ci"):
+        if not old.get(key) and new.get(key):
+            out.append(f"{key}: {ascii(bool(old.get(key)))} -> {ascii(True)}")
+    for key in ("mcp", "files"):
+        added = [s for s in new.get(key, []) if s not in old.get(key, [])]
+        if added:
+            out.append(f"{key}: added {ascii(added)}")
     for key in ("proof", "double_proof"):
         if old.get(key) and not new.get(key):
-            out.append(f"{key}: true -> false")
+            out.append(f"{key}: {ascii(True)} -> {ascii(bool(new.get(key)))}")
     for key in IDENTITY_FIELDS:
         if old.get(key) != new.get(key):
-            out.append(f"{key}: {old.get(key)!r} -> {new.get(key)!r}")
+            out.append(f"{key}: {ascii(old.get(key))} -> {ascii(new.get(key))}")
     return out
 
 
@@ -201,9 +282,9 @@ def write_atomic(path, data):
 
 
 def write(doc, unit_id, worktree, manifest, branch=None, launch=None, prompt=None,
-          approve_escalation=False):
+          approve_escalation=False, branch_regex=None):
     """Write the snapshot. Returns (exit_code, message)."""
-    new = build(doc, unit_id, worktree, manifest, branch, launch, prompt)
+    new = build(doc, unit_id, worktree, manifest, branch, launch, prompt, branch_regex)
     old = load(unit_id)
     if old is not None:
         diff = escalations(old, new)
@@ -217,7 +298,8 @@ def write(doc, unit_id, worktree, manifest, branch=None, launch=None, prompt=Non
 
 def parse_args(argv):
     opts, pos, flags = {}, [], set()
-    valued = {"--unit", "--worktree", "--manifest", "--branch", "--launch", "--prompt"}
+    valued = {"--unit", "--worktree", "--manifest", "--branch", "--branch-regex", "--launch",
+              "--prompt"}
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -253,13 +335,13 @@ def selftest():
         try:
             doc = tmp / "doc.md"
             doc.write_text("---\nmodel_exec: sonnet\nproof: yes\nallow_config: no\n"
-                           "mcp: [a, b]\n---\nbody\n", encoding="utf-8")
+                           "mcp: [mcp__s__a, mcp__s__b]\n---\nbody\n", encoding="utf-8")
             args = dict(unit_id="U-1", worktree=tmp, manifest=tmp / "m.md")
             rc, _ = write(doc, **args)
             snap = load("U-1")
             check("write ok", rc == 0 and snap is not None)
             check("fields", snap and snap["proof"] is True and snap["allow_config"] is False
-                  and snap["mcp"] == ["a", "b"] and snap["model_exec"] == "sonnet")
+                  and snap["mcp"] == ["mcp__s__a", "mcp__s__b"] and snap["model_exec"] == "sonnet")
             doc.write_text(doc.read_text().replace("allow_config: no", "allow_config: yes"),
                            encoding="utf-8")
             rc, msg = write(doc, **args)
@@ -267,6 +349,13 @@ def selftest():
             check("approved escalation passes",
                   write(doc, approve_escalation=True, **args)[0] == 0)
             check("bad id", load("../x") is None)
+            doc.write_text(doc.read_text().replace("model_exec: sonnet", "model_exec: gpt"),
+                           encoding="utf-8")
+            try:
+                write(doc, approve_escalation=True, **args)
+                check("invalid model rejected", False)
+            except SnapshotError as exc:
+                check("invalid model rejected", "model_exec" in str(exc))
         finally:
             if saved is None:
                 os.environ.pop("KITCHEN_UNITS_DIR", None)
@@ -287,7 +376,7 @@ def main(argv):
                     raise SnapshotError(f"write needs --{need}")
             rc, msg = write(pos[1], opts["unit"], opts["worktree"], opts["manifest"],
                             opts.get("branch"), opts.get("launch"), opts.get("prompt"),
-                            "--approve-escalation" in flags)
+                            "--approve-escalation" in flags, opts.get("branch-regex"))
             print(msg, file=sys.stderr if rc else sys.stdout)
             return rc
         if len(pos) == 2 and pos[0] == "show":
